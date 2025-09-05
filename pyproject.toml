@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=70.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vidnn"
+version = "0.1.0"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [
+    { name = "Myungsang Lee", email = "lms0577@gmail.com" },
+]
+
+# Tools settings -------------------------------------------------------------------------------------------------------
+[tool.setuptools]  # configuration specific to the `setuptools` build backend.
+packages = { find = { where = ["."], include = ["vidnn", "vidnn.*"] } }

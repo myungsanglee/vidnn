@@ -11,11 +11,7 @@ class YoloDataModule(pl.LightningDataModule):
         self.cfg = cfg
         self.train_path = os.path.join(self.cfg["path"], self.cfg["train"])
         self.val_path = os.path.join(self.cfg["path"], self.cfg["val"])
-        self.test_path = (
-            os.path.join(self.cfg["path"], self.cfg["test"])
-            if self.cfg["test"] is not None
-            else None
-        )
+        self.test_path = os.path.join(self.cfg["path"], self.cfg["test"]) if self.cfg["test"] is not None else None
         self.batch_size = self.cfg["batch_size"]
         self.num_workers = self.cfg["workers"]
 
@@ -25,13 +21,13 @@ class YoloDataModule(pl.LightningDataModule):
                 self.train_path,
                 self.cfg["imgsz"],
                 augment=True,
-                hyp=self.cfg,
+                cfg=self.cfg,
             )
             self.val_dataset = YoloDataset(
                 self.val_path,
                 self.cfg["imgsz"],
                 augment=False,
-                hyp=self.cfg,
+                cfg=self.cfg,
             )
 
         if stage == "test" or stage is None:
@@ -40,7 +36,7 @@ class YoloDataModule(pl.LightningDataModule):
                     self.test_path,
                     self.cfg["imgsz"],
                     augment=False,
-                    hyp=self.cfg,
+                    cfg=self.cfg,
                 )
 
     def train_dataloader(self):
@@ -56,7 +52,7 @@ class YoloDataModule(pl.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.val_dataset,
-            batch_size=self.batch_size * 2,
+            batch_size=self.batch_size,
             num_workers=self.num_workers,
             collate_fn=self.val_dataset.collate_fn,
             pin_memory=True,
@@ -65,7 +61,7 @@ class YoloDataModule(pl.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(
             self.test_dataset,
-            batch_size=self.batch_size * 2,
+            batch_size=self.batch_size,
             num_workers=self.num_workers,
             collate_fn=self.test_dataset.collate_fn,
             pin_memory=True,

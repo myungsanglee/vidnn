@@ -1,13 +1,13 @@
 import cv2
 import numpy as np
-from data.datamodule import YoloDataModule
-from utils.yaml_helper import get_configs
+import torch
+
+from vidnn.data.datamodule import YoloDataModule
+from vidnn.utils.yaml_helper import get_configs
 
 
 def check_dataloader():
-    """Initializes the YoloDataModule, and visualizes the result."""
-
-    yaml_path = "configs/yolo.yaml"
+    yaml_path = "/mnt/michael/vidnn/vidnn/configs/yolo.yaml"
     cfg = get_configs(yaml_path)
 
     print("Initializing YoloDataModule with v8 augmentations...")
@@ -15,38 +15,37 @@ def check_dataloader():
 
     print("Setting up data...")
     data_module.setup(stage="fit")
-    dataloader = data_module.train_dataloader()
-    # dataloader = data_module.val_dataloader()
-    images, labels = next(iter(dataloader))
+    # dataloader = data_module.train_dataloader()
+    dataloader = data_module.val_dataloader()
+    batch = next(iter(dataloader))
 
-    print("\n--- Batch Information ---")
-    print(f"Images tensor shape: {images.shape}")
-    print(f"Labels tensor shape: {labels.shape}")
-    print("-------------------------\n")
+    targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"]), 1)
 
-    # --- 시각화 ---
-    for i in range(len(images)):
-        img_tensor = images[i]
-        img_np = img_tensor.permute(1, 2, 0).numpy()
-        img_np = (img_np * 255).astype(np.uint8)
-        img_np = np.ascontiguousarray(img_np)
+    batch_img = batch["img"]
+    batch_size = batch_img.shape[0]
+    print(f"Images tensor shape: {batch_img.size()}")
+    print(f"Targets tensor shape: {targets.size()}")
 
-        first_img_labels = labels[labels[:, 0] == i]
-        print(f"Found {len(first_img_labels)} labels for the first image.")
+    for i in range(batch_size):
+        img = batch_img[i].permute(1, 2, 0).numpy()
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        height, width = img.shape[:2]
 
-        for label in first_img_labels:
-            class_id = int(label[1])
-            x_center, y_center, width, height = label[2:]
+        indices = torch.where(targets[:, 0] == i)[0]
+        target = targets[indices].numpy()[..., 1:]
+        cls = target[..., :1]
+        bboxes = target[..., 1:]
+        for cls_id, bbox in zip(cls, bboxes):
+            class_id = int(cls_id[0])
+            cx, cy, w, h = bbox
+            x1 = int((cx - w / 2) * width)
+            y1 = int((cy - h / 2) * height)
+            x2 = int((cx + w / 2) * width)
+            y2 = int((cy + h / 2) * height)
 
-            h, w, _ = img_np.shape
-            x1 = int((x_center - width / 2) * w)
-            y1 = int((y_center - height / 2) * h)
-            x2 = int((x_center + width / 2) * w)
-            y2 = int((y_center + height / 2) * h)
-
-            cv2.rectangle(img_np, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
             cv2.putText(
-                img_np,
+                img,
                 f"cls: {class_id}",
                 (x1, y1 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -55,13 +54,9 @@ def check_dataloader():
                 2,
             )
 
-        # output_path = "augmented_sample_v8.jpg"
-        cv2.imshow("test", img_np)
+        cv2.imshow("test", img)
         cv2.waitKey(0)
     cv2.destroyAllWindows()
-
-    print(f"\nSuccessfully visualized the first sample of the batch.")
-    # print(f"Check the output image at: {output_path}")
 
 
 if __name__ == "__main__":
