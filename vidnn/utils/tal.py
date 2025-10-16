@@ -215,8 +215,8 @@ class TaskAlignedAssigner(nn.Module):
         topk_idxs.masked_fill_(~topk_mask, 0)
 
         # (b, max_num_obj, topk, h*w) -> (b, max_num_obj, h*w)
-        count_tensor = torch.zeros(metrics.shape, dtype=torch.int8, device=topk_idxs.device)
-        ones = torch.ones_like(topk_idxs[:, :, :1], dtype=torch.int8, device=topk_idxs.device)
+        count_tensor = torch.zeros(metrics.shape, dtype=torch.int32, device=topk_idxs.device)
+        ones = torch.ones_like(topk_idxs[:, :, :1], dtype=torch.int32, device=topk_idxs.device)
         for k in range(self.topk):
             # Expand topk_idxs for each value of k and add 1 at the specified positions
             count_tensor.scatter_add_(-1, topk_idxs[:, :, k : k + 1], ones)

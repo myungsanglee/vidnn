@@ -266,7 +266,7 @@ def non_max_suppression(
         else:
             prediction = torch.cat((xywh2xyxy(prediction[..., :4]), prediction[..., 4:]), dim=-1)  # xywh to xyxy
 
-    t = time.time()
+    # t = time.time()
     output = [torch.zeros((0, 6 + extra), device=prediction.device)] * bs
     keepi = [torch.zeros((0, 1), device=prediction.device)] * bs  # to store the kept idxs
     for xi, (x, xk) in enumerate(zip(prediction, xinds)):  # image index, (preds, preds indices)
@@ -325,9 +325,9 @@ def non_max_suppression(
         i = i[:max_det]  # limit detections
 
         output[xi], keepi[xi] = x[i], xk[i].reshape(-1)
-        if (time.time() - t) > time_limit:
-            LOGGER.warning(f"NMS time limit {time_limit:.3f}s exceeded")
-            break  # time limit exceeded
+        # if (time.time() - t) > time_limit:
+        #     LOGGER.warning(f"NMS time limit {time_limit:.3f}s exceeded")
+        #     break  # time limit exceeded
 
     return (output, keepi) if return_idxs else output
 

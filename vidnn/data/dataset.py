@@ -1,27 +1,39 @@
+import glob
 import cv2
 import numpy as np
 import torch
 import random
 import os
 import math
+from copy import deepcopy
+from tqdm import tqdm
+from itertools import repeat
+from multiprocessing.pool import ThreadPool
+from pathlib import Path
 from torch.utils.data import Dataset
 import albumentations as A
 
-from .utils import xywhn2xyxy, xyxy2xywhn
+from vidnn.utils import LOGGER, NUM_THREADS, LOCAL_RANK
+from vidnn.data.utils import IMG_FORMATS, verify_image_label, get_hash, save_dataset_cache_file, load_dataset_cache_file, xywhn2xyxy, xyxy2xywhn
 
-IMG_FORMATS = {"bmp", "dng", "jpeg", "jpg", "mpo", "png", "tif", "tiff", "webp", "pfm", "heic"}  # image suffixes
+DATASET_CACHE_VERSION = "1.0.0"
 
 
 class YoloDataset(Dataset):
-    def __init__(self, img_path, imgsz=640, augment=False, cfg=None, bgr=0.0):
+    def __init__(self, img_path, imgsz=640, augment=False, cfg=None, bgr=0.0, prefix=""):
         self.img_path = img_path
         self.imgsz = imgsz
         self.augment = augment
         self.cfg = cfg if cfg is not None else {}
+        self.bgr = bgr
+        self.prefix = prefix
+        self.use_keypoints = False
+        self.single_cls = self.cfg.get("single_cls", False)
         self.img_files = self.get_img_files(img_path)
         self.label_files = [x.replace("images", "labels").rsplit(".", 1)[0] + ".txt" for x in self.img_files]
-        self.indices = range(len(self.img_files))
-        self.bgr = bgr
+        self.labels = self.get_labels()
+        self.indices = range(len(self.labels))
+        self.ni = len(self.labels)  # number of images
         self.albumentations = A.Compose(
             [
                 A.Blur(p=0.01),
@@ -34,8 +46,13 @@ class YoloDataset(Dataset):
             ]
         )
 
+        # Buffer thread for mosaic images
+        self.buffer = []  # buffer size = batch size
+        self.max_buffer_length = min((self.ni, cfg["batch_size"] * 8, 1000)) if self.augment else 0
+        self.ims, self.im_hw0, self.im_hw = [None] * self.ni, [None] * self.ni, [None] * self.ni
+
     def __len__(self):
-        return len(self.img_files)
+        return len(self.labels)
 
     def __getitem__(self, index):
         label = self.get_image_and_label(index)
@@ -95,12 +112,142 @@ class YoloDataset(Dataset):
 
         return label
 
+    def cache_labels(self, path: Path = Path("./labels.cache")):
+        """
+        Cache dataset labels, check images and read shapes.
+
+        Args:
+            path (Path): Path where to save the cache file.
+
+        Returns:
+            (dict): Dictionary containing cached labels and related information.
+        """
+        x = {"labels": []}
+        nm, nf, ne, nc, msgs = 0, 0, 0, 0, []  # number missing, found, empty, corrupt, messages
+        desc = f"{self.prefix}Scanning {path.parent / path.stem}..."
+        total = len(self.img_files)
+        nkpt, ndim = self.cfg.get("kpt_shape", (0, 0))
+        if self.use_keypoints and (nkpt <= 0 or ndim not in {2, 3}):
+            raise ValueError(
+                "'kpt_shape' in data.yaml missing or incorrect. Should be a list with [number of "
+                "keypoints, number of dims (2 for x,y or 3 for x,y,visible)], i.e. 'kpt_shape: [17, 3]'"
+            )
+        with ThreadPool(NUM_THREADS) as pool:
+            results = pool.imap(
+                func=verify_image_label,
+                iterable=zip(
+                    self.img_files,
+                    self.label_files,
+                    repeat(self.prefix),
+                    repeat(self.use_keypoints),
+                    repeat(len(self.cfg["names"])),
+                    repeat(nkpt),
+                    repeat(ndim),
+                    repeat(self.single_cls),
+                ),
+            )
+            pbar = tqdm(results, desc=desc, total=total)
+            for im_file, lb, shape, segments, keypoint, nm_f, nf_f, ne_f, nc_f, msg in pbar:
+                nm += nm_f
+                nf += nf_f
+                ne += ne_f
+                nc += nc_f
+                if im_file:
+                    x["labels"].append(
+                        {
+                            "im_file": im_file,
+                            "shape": shape,
+                            "cls": lb[:, 0:1],  # n, 1
+                            "bboxes": lb[:, 1:],  # n, 4
+                            "segments": segments,
+                            "keypoints": keypoint,
+                            "normalized": True,
+                            "bbox_format": "xywh",
+                        }
+                    )
+                if msg:
+                    msgs.append(msg)
+                pbar.desc = f"{desc} {nf} images, {nm + ne} backgrounds, {nc} corrupt"
+            pbar.close()
+
+        if msgs:
+            LOGGER.info("\n".join(msgs))
+        if nf == 0:
+            LOGGER.warning(f"{self.prefix}No labels found in {path}.")
+        x["hash"] = get_hash(self.label_files + self.img_files)
+        x["results"] = nf, nm, ne, nc, len(self.img_files)
+        x["msgs"] = msgs  # warnings
+        save_dataset_cache_file(self.prefix, path, x, DATASET_CACHE_VERSION)
+        return x
+
+    def get_labels(self):
+        """
+        Return dictionary of labels for YOLO training.
+
+        This method loads labels from disk or cache, verifies their integrity, and prepares them for training.
+
+        Returns:
+            (List[dict]): List of label dictionaries, each containing information about an image and its annotations.
+        """
+        cache_path = Path(self.label_files[0]).parent.with_suffix(".cache")
+        try:
+            cache, exists = load_dataset_cache_file(cache_path), True  # attempt to load a *.cache file
+            assert cache["version"] == DATASET_CACHE_VERSION  # matches current version
+            assert cache["hash"] == get_hash(self.label_files + self.img_files)  # identical hash
+        except (FileNotFoundError, AssertionError, AttributeError):
+            cache, exists = self.cache_labels(cache_path), False  # run cache ops
+
+        # Display cache
+        nf, nm, ne, nc, n = cache.pop("results")  # found, missing, empty, corrupt, total
+        if exists and LOCAL_RANK in {-1, 0}:
+            d = f"Scanning {cache_path}... {nf} images, {nm + ne} backgrounds, {nc} corrupt"
+            tqdm(None, desc=self.prefix + d, total=n, initial=n)  # display results
+            if cache["msgs"]:
+                LOGGER.info("\n".join(cache["msgs"]))  # display warnings
+
+        # Read cache
+        [cache.pop(k) for k in ("hash", "version", "msgs")]  # remove items
+        labels = cache["labels"]
+        if not labels:
+            raise RuntimeError(f"No valid images found in {cache_path}. Images with incorrectly formatted labels are ignored.")
+        self.im_files = [lb["im_file"] for lb in labels]  # update im_files
+
+        # Check if the dataset is all boxes or all segments
+        lengths = ((len(lb["cls"]), len(lb["bboxes"]), len(lb["segments"])) for lb in labels)
+        len_cls, len_boxes, len_segments = (sum(x) for x in zip(*lengths))
+        if len_segments and len_boxes != len_segments:
+            LOGGER.warning(
+                f"Box and segment counts should be equal, but got len(segments) = {len_segments}, "
+                f"len(boxes) = {len_boxes}. To resolve this only boxes will be used and all segments will be removed. "
+                "To avoid this please supply either a detect or segment dataset, not a detect-segment mixed dataset."
+            )
+            for lb in labels:
+                lb["segments"] = []
+        if len_cls == 0:
+            LOGGER.warning(f"Labels are missing or empty in {cache_path}, training may not work correctly.")
+        return labels
+
     def get_img_files(self, img_path):
         try:
-            img_files = sorted([os.path.join(img_path, x) for x in os.listdir(img_path) if x.rpartition(".")[-1].lower() in IMG_FORMATS])
-            assert img_files, f"No images found in {img_path}."
+            f = []  # image files
+            for p in img_path if isinstance(img_path, list) else [img_path]:
+                p = Path(p)  # os-agnostic
+                if p.is_dir():  # dir
+                    f += glob.glob(str(p / "**" / "*.*"), recursive=True)
+                    # F = list(p.rglob('*.*'))  # pathlib
+                elif p.is_file():  # file
+                    with open(p, encoding="utf-8") as t:
+                        t = t.read().strip().splitlines()
+                        parent = str(p.parent) + os.sep
+                        f += [x.replace("./", parent) if x.startswith("./") else x for x in t]  # local to global path
+                        # F += [p.parent / x.lstrip(os.sep) for x in t]  # local to global path (pathlib)
+                else:
+                    raise FileNotFoundError(f"{self.prefix}{p} does not exist")
+            img_files = sorted(x.replace("/", os.sep) for x in f if x.rpartition(".")[-1].lower() in IMG_FORMATS)
+            # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
+            assert img_files, f"{self.prefix}No images found in {img_path}."
         except Exception as e:
-            raise FileNotFoundError(f"{e}")
+            raise FileNotFoundError(f"{self.prefix}Error loading data from {img_path}") from e
         return img_files
 
     def get_image_and_label(self, index):
@@ -113,7 +260,7 @@ class YoloDataset(Dataset):
         Returns:
             (Dict[str, Any]): Label dictionary with image and metadata.
         """
-        label = {}
+        label = deepcopy(self.labels[index])
 
         # get image
         label["img"], label["ori_shape"], label["resized_shape"] = self.load_image(index)
@@ -122,28 +269,39 @@ class YoloDataset(Dataset):
             label["resized_shape"][1] / label["ori_shape"][1],
         )  # for evaluation
 
-        # get label
-        lb = self.load_label(index)
-        label["cls"] = lb[:, 0:1]  # n, 1
-        label["bboxes"] = lb[:, 1:]  # n, 4
-        label["bbox_format"] = "xywh"
+        # # get label
+        # lb = self.load_label(index)
+        # label["cls"] = lb[:, 0:1]  # n, 1
+        # label["bboxes"] = lb[:, 1:]  # n, 4
+        # label["bbox_format"] = "xywh"
 
         return label
 
     def load_image(self, i):
-        filename = self.img_files[i]
-        im = self.imread(filename)
+        im, filename = self.ims[i], self.img_files[i]
         if im is None:
-            raise FileNotFoundError(f"Image Not Found {filename}")
-        h0, w0 = im.shape[:2]  # orig hw
-        r = self.imgsz / max(h0, w0)  # ratio
-        if r != 1:  # if sizes are not equal
-            w, h = (min(math.ceil(w0 * r), self.imgsz), min(math.ceil(h0 * r), self.imgsz))
-            im = cv2.resize(im, (w, h), interpolation=cv2.INTER_LINEAR)
-        if im.ndim == 2:
-            im = im[..., None]
+            im = self.imread(filename)
+            if im is None:
+                raise FileNotFoundError(f"Image Not Found {filename}")
+            h0, w0 = im.shape[:2]  # orig hw
+            r = self.imgsz / max(h0, w0)  # ratio
+            if r != 1:  # if sizes are not equal
+                w, h = (min(math.ceil(w0 * r), self.imgsz), min(math.ceil(h0 * r), self.imgsz))
+                im = cv2.resize(im, (w, h), interpolation=cv2.INTER_LINEAR)
+            if im.ndim == 2:
+                im = im[..., None]
 
-        return im, (h0, w0), im.shape[:2]
+            # Add to buffer if training with augmentations
+            if self.augment:
+                self.ims[i], self.im_hw0[i], self.im_hw[i] = im, (h0, w0), im.shape[:2]  # im, hw_original, hw_resized
+                self.buffer.append(i)
+                if 1 < len(self.buffer) >= self.max_buffer_length:  # prevent empty buffer
+                    j = self.buffer.pop(0)
+                    self.ims[j], self.im_hw0[j], self.im_hw[j] = None, None, None
+
+            return im, (h0, w0), im.shape[:2]
+
+        return self.ims[i], self.im_hw0[i], self.im_hw[i]
 
     def imread(self, filename, flags=cv2.IMREAD_COLOR):
         """
@@ -185,13 +343,17 @@ class YoloDataset(Dataset):
             lb = np.zeros((0, 5), dtype=np.float32)
         return lb
 
+    def close_mosaic(self):
+        self.cfg["mosaic"] = 0.0
+
     def _mosaic4(self, label):
         cls4 = []
         bboxes4 = []
         s = self.imgsz
         border = (-self.imgsz // 2, -self.imgsz // 2)  # width, height
         yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in border)  # mosaic center x, y
-        indices = [-1] + random.choices(self.indices, k=3)
+        # indices = [-1] + random.choices(self.indices, k=3)
+        indices = [-1] + random.choices(list(self.buffer), k=3)
         for i, idx in enumerate(indices):
             labels_patch = label if idx == -1 else self.get_image_and_label(idx)
             # Load image
@@ -296,6 +458,8 @@ class YoloDataset(Dataset):
         return label
 
     def _random_perspective(self, label, degrees=0.0, translate=0.1, scale=0.5, shear=0.0, perspective=0.0):
+        if "mosaic_border" not in label:
+            label = self._letterbox(label, new_shape=self.imgsz)
         img = label["img"]
         cls = label["cls"]
         bboxes = label["bboxes"]

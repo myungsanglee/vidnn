@@ -22,12 +22,14 @@ class YoloDataModule(pl.LightningDataModule):
                 self.cfg["imgsz"],
                 augment=True,
                 cfg=self.cfg,
+                prefix="train: ",
             )
             self.val_dataset = YoloDataset(
                 self.val_path,
                 self.cfg["imgsz"],
                 augment=False,
                 cfg=self.cfg,
+                prefix="val: ",
             )
 
         if stage == "test" or stage is None:
@@ -37,6 +39,7 @@ class YoloDataModule(pl.LightningDataModule):
                     self.cfg["imgsz"],
                     augment=False,
                     cfg=self.cfg,
+                    prefix="test: ",
                 )
 
     def train_dataloader(self):

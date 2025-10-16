@@ -429,3 +429,10 @@ def plt_settings(rcparams=None, backend="Agg"):
         return wrapper
 
     return decorator
+
+
+def check_configs(cfg):
+    if cfg["single_cls"]:
+        cfg["names"] = {0: "item"}
+
+    return cfg

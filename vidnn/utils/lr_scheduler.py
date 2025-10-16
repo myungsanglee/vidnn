@@ -1,14 +1,15 @@
-"""
-https://github.com/gaussian37/pytorch_deep_learning_models/blob/master/cosine_annealing_with_warmup/cosine_annealing_with_warmup.py
-"""
-
 import math
 from bisect import bisect_left
-
+import numpy as np
+from torch.optim.optimizer import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
 
 
 class CosineAnnealingWarmUpRestarts(_LRScheduler):
+    """
+    https://github.com/gaussian37/pytorch_deep_learning_models/blob/master/cosine_annealing_with_warmup/cosine_annealing_with_warmup.py
+    """
+
     def __init__(self, optimizer, T_0, T_mult=1, eta_max=0.1, T_up=0, gamma=1.0, last_epoch=-1):
         if T_0 <= 0 or not isinstance(T_0, int):
             raise ValueError("Expected positive integer T_0, but got {}".format(T_0))
@@ -91,5 +92,113 @@ class YoloLR(_LRScheduler):
         else:
             self.last_epoch = epoch
 
+        for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
+            param_group["lr"] = lr
+
+
+class VidnnScheduler(_LRScheduler):
+    """
+    A custom learning rate scheduler that combines a step-based warmup phase with an epoch-based decay phase (linear or cosine).
+
+    This scheduler replicates the behavior used in the Ultralytics training pipeline.
+    It must be called at every `step`.
+
+    Args:
+        optimizer (Optimizer): The optimizer to wrap.
+        total_epochs (int): The total number of training epochs.
+        steps_per_epoch (int): The number of steps (batches) in one epoch.
+        warmup_steps (int): The total number of steps for the warmup phase.
+        lrf (float, optional): The final learning rate factor (final_lr = initial_lr * lrf). Defaults to 0.01.
+        cos_lr (bool, optional): If True, uses cosine annealing for the decay phase. Otherwise, uses linear decay. Defaults to False.
+        warmup_momentum (float, optional): The initial momentum for the warmup phase. Defaults to 0.8.
+        warmup_bias_lr (float, optional): The initial learning rate for the bias parameter group during warmup. Defaults to 0.1.
+    """
+
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        total_epochs: int,
+        steps_per_epoch: int,
+        warmup_steps: int,
+        lrf: float = 0.01,
+        cos_lr: bool = False,
+        warmup_momentum: float = 0.8,
+        warmup_bias_lr: float = 0.1,
+    ):
+
+        self.total_epochs = total_epochs
+        self.steps_per_epoch = steps_per_epoch
+        self.warmup_steps = warmup_steps
+        self.lrf = lrf
+        self.cos_lr = cos_lr
+        self.warmup_momentum = warmup_momentum
+        self.warmup_bias_lr = warmup_bias_lr
+
+        # Main decay function (epoch-based)
+        if self.cos_lr:
+            # Cosine decay lambda
+            self.lr_lambda = self._cosine_lr_scheduler
+        else:
+            # Linear decay lambda
+            self.lr_lambda = self._linear_lr_scheduler
+
+        super().__init__(optimizer)
+
+    def _linear_lr_scheduler(self, epoch):
+        """Calculates linear learning rate decay."""
+        return max(1 - epoch / self.total_epochs, 0) * (1.0 - self.lrf) + self.lrf
+
+    def _cosine_lr_scheduler(self, epoch):
+        """Calculates cosine learning rate decay."""
+        # Replicates _one_cycle(y1=1.0, y2=self.lrf, steps=self.total_epochs)
+        y1 = 1.0
+        y2 = self.lrf
+        steps = self.total_epochs
+        return max((1 - math.cos(epoch * math.pi / steps)) / 2, 0) * (y2 - y1) + y1
+
+    def get_lr(self):
+        """
+        Calculates the learning rate for the current step.
+        This method is called by `_LRScheduler`'s `step()` method.
+        Note: `self.last_epoch` is used here as a step counter.
+        """
+        current_step = self.last_epoch
+
+        if current_step <= self.warmup_steps:
+            # --- Warmup Phase (step-based) ---
+            interp_values = [0, self.warmup_steps]
+
+            new_lrs = []
+            for i, (base_lr, param_group) in enumerate(zip(self.base_lrs, self.optimizer.param_groups)):
+                # The first param group is assumed to be the bias group
+                start_lr = self.warmup_bias_lr if i == 0 else 0.0
+
+                # The target LR is the one calculated by the main epoch-based scheduler for epoch 0
+                current_epoch = current_step // self.steps_per_epoch
+                target_lr_epoch0 = base_lr * self.lr_lambda(current_epoch)
+
+                lr = np.interp(current_step, interp_values, [start_lr, target_lr_epoch0])
+                new_lrs.append(lr)
+
+                if "momentum" in param_group:
+                    base_momentum = self.optimizer.defaults["momentum"]
+                    param_group["momentum"] = np.interp(current_step, interp_values, [self.warmup_momentum, base_momentum])
+
+            return new_lrs
+        else:
+            # --- Decay Phase (epoch-based) ---
+            # Adjust step count to be relative to the start of the decay phase
+            # decay_step = current_step - self.warmup_steps
+            # current_epoch = decay_step // self.steps_per_epoch
+            current_epoch = current_step // self.steps_per_epoch
+            multiplier = self.lr_lambda(current_epoch)
+            return [base_lr * multiplier for base_lr in self.base_lrs]
+
+    def step(self, epoch=None):
+        """
+        Performs a scheduler step.
+        The epoch argument is ignored as this scheduler is step-driven.
+        """
+        self.last_epoch += 1
         for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
             param_group["lr"] = lr

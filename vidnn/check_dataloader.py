@@ -1,3 +1,4 @@
+import sys
 import cv2
 import numpy as np
 import torch
@@ -15,9 +16,12 @@ def check_dataloader():
 
     print("Setting up data...")
     data_module.setup(stage="fit")
-    # dataloader = data_module.train_dataloader()
-    dataloader = data_module.val_dataloader()
+    dataloader = data_module.train_dataloader()
+    # dataloader = data_module.val_dataloader()
     batch = next(iter(dataloader))
+
+    print(len(dataloader))
+    print(len(dataloader.dataset))
 
     targets = torch.cat((batch["batch_idx"].view(-1, 1), batch["cls"].view(-1, 1), batch["bboxes"]), 1)
 
