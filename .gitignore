@@ -2,7 +2,7 @@
 runs/
 *.jpg
 *.png
-.python-version/
+.python-version
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
