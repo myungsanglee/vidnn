@@ -14,20 +14,33 @@ from torch.utils.data import Dataset
 import albumentations as A
 
 from vidnn.utils import LOGGER, NUM_THREADS, LOCAL_RANK
-from vidnn.data.utils import IMG_FORMATS, verify_image_label, get_hash, save_dataset_cache_file, load_dataset_cache_file, xywhn2xyxy, xyxy2xywhn
+from vidnn.data.utils import (
+    IMG_FORMATS,
+    verify_image_label,
+    get_hash,
+    save_dataset_cache_file,
+    load_dataset_cache_file,
+    polygons2masks_overlap,
+    polygons2masks,
+)
+from vidnn.utils.ops import resample_segments, xywh2xyxy, xyxy2xywh, segment2box, xyxyxyxy2xywhr
 
 DATASET_CACHE_VERSION = "1.0.0"
 
 
 class YoloDataset(Dataset):
-    def __init__(self, img_path, imgsz=640, augment=False, cfg=None, bgr=0.0, prefix=""):
+    def __init__(self, img_path, imgsz=640, augment=False, cfg={}, bgr=0.0, prefix=""):
         self.img_path = img_path
         self.imgsz = imgsz
         self.augment = augment
-        self.cfg = cfg if cfg is not None else {}
+        self.cfg = cfg
         self.bgr = bgr
         self.prefix = prefix
-        self.use_keypoints = False
+        task = cfg["task"]
+        self.use_segments = task == "segment"
+        self.use_keypoints = task == "pose"
+        self.use_obb = task == "obb"
+        assert not (self.use_segments and self.use_keypoints), "Can not use both segments and keypoints."
         self.single_cls = self.cfg.get("single_cls", False)
         self.img_files = self.get_img_files(img_path)
         self.label_files = [x.replace("images", "labels").rsplit(".", 1)[0] + ".txt" for x in self.img_files]
@@ -45,6 +58,17 @@ class YoloDataset(Dataset):
                 A.ImageCompression(quality_range=(75, 100), p=0.0),
             ]
         )
+        self.flip_idx = self.cfg.get("flip_idx", [])
+        if self.use_keypoints:
+            kpt_shape = self.cfg.get("kpt_shape", None)
+            if len(self.flip_idx) == 0 and (self.cfg["fliplr"] > 0.0 or self.cfg["flipud"] > 0.0):
+                self.cfg["fliplr"] = self.cfg["flipud"] = 0.0  # both fliplr and flipud require flip_idx
+                LOGGER.warning("No 'flip_idx' array defined in yaml file, disabling 'fliplr' and 'flipud' augmentations.")
+            elif self.flip_idx and (len(self.flip_idx) != kpt_shape[0]):
+                raise ValueError(f"data flip_idx={self.flip_idx} length must be equal to kpt_shape[0]={kpt_shape[0]}")
+
+        self.mask_ratio = self.cfg["mask_ratio"]
+        self.overlap_mask = self.cfg["overlap_mask"]
 
         # Buffer thread for mosaic images
         self.buffer = []  # buffer size = batch size
@@ -97,8 +121,44 @@ class YoloDataset(Dataset):
         h, w = img.shape[:2]
         cls = label.pop("cls")
         bboxes = label.pop("bboxes")
-        bboxes = xyxy2xywhn(bboxes, w=w, h=h, clip=True) if label["bbox_format"] == "xyxy" else bboxes
+        segments = label.pop("segments")
+        keypoints = label.pop("keypoints")
+        bbox_format = label.pop("bbox_format")
+        normalized = label.pop("normalized")
+        if bbox_format == "xyxy":
+            # bboxes = xyxy2xywhn(bboxes, w=w, h=h, clip=True) if label["bbox_format"] == "xyxy" else bboxes
+            # convert bbox
+            bboxes = xyxy2xywh(bboxes)
+            normalized = False
+        elif bbox_format == "xywh":
+            # denormalize
+            bboxes[:, 0] *= w
+            bboxes[:, 1] *= h
+            bboxes[:, 2] *= w
+            bboxes[:, 3] *= h
+            segments[..., 0] *= w
+            segments[..., 1] *= h
+            if keypoints is not None:
+                keypoints[..., 0] *= w
+                keypoints[..., 1] *= h
+            normalized = False
         nl = len(bboxes)
+
+        if self.use_segments:
+            if nl:
+                if self.overlap_mask:
+                    masks, sorted_idx = polygons2masks_overlap((h, w), segments, downsample_ratio=self.mask_ratio)
+                    masks = masks[None]  # (640, 640) -> (1, 640, 640)
+                    segments = segments[sorted_idx] if len(segments) else segments
+                    keypoints = keypoints[sorted_idx] if keypoints is not None else None
+                    bboxes = bboxes[sorted_idx]
+                    cls = cls[sorted_idx]
+                else:
+                    masks = polygons2masks((h, w), segments, color=1, downsample_ratio=self.mask_ratio)
+                masks = torch.from_numpy(masks)
+            else:
+                masks = torch.zeros(1 if self.overlap_mask else nl, img.shape[0] // self.mask_ratio, img.shape[1] // self.mask_ratio)
+            label["masks"] = masks
 
         if len(img.shape) < 3:
             img = np.expand_dims(img, -1)
@@ -108,6 +168,20 @@ class YoloDataset(Dataset):
         label["img"] = img
         label["cls"] = torch.from_numpy(cls) if nl else torch.zeros(nl)
         label["bboxes"] = torch.from_numpy(bboxes) if nl else torch.zeros((nl, 4))
+
+        if self.use_keypoints:
+            label["keypoints"] = torch.empty(0, 3) if keypoints is None else torch.from_numpy(keypoints)
+            if not normalized:
+                label["keypoints"][..., 0] /= w
+                label["keypoints"][..., 1] /= h
+
+        if self.use_obb:
+            label["bboxes"] = xyxyxyxy2xywhr(torch.from_numpy(segments)) if len(segments) else torch.zeros((0, 5))
+
+        if not normalized:
+            label["bboxes"][:, [0, 2]] /= w
+            label["bboxes"][:, [1, 3]] /= h
+
         label["batch_idx"] = torch.zeros(nl)
 
         return label
@@ -261,7 +335,7 @@ class YoloDataset(Dataset):
             (Dict[str, Any]): Label dictionary with image and metadata.
         """
         label = deepcopy(self.labels[index])
-
+        label.pop("shape", None)  # shape is for rect, remove it
         # get image
         label["img"], label["ori_shape"], label["resized_shape"] = self.load_image(index)
         label["ratio_pad"] = (
@@ -269,11 +343,22 @@ class YoloDataset(Dataset):
             label["resized_shape"][1] / label["ori_shape"][1],
         )  # for evaluation
 
-        # # get label
-        # lb = self.load_label(index)
-        # label["cls"] = lb[:, 0:1]  # n, 1
-        # label["bboxes"] = lb[:, 1:]  # n, 4
-        # label["bbox_format"] = "xywh"
+        # update labels info
+        segments = label.pop("segments", [])
+        keypoints = label.pop("keypoints", None)
+
+        # NOTE: do NOT resample oriented boxes
+        segment_resamples = 100 if self.use_obb else 1000
+        if len(segments) > 0:
+            # make sure segments interpolate correctly if original length is greater than segment_resamples
+            max_len = max(len(s) for s in segments)
+            segment_resamples = (max_len + 1) if segment_resamples < max_len else segment_resamples
+            # list[np.array(segment_resamples, 2)] * num_samples
+            segments = np.stack(resample_segments(segments, n=segment_resamples), axis=0)
+        else:
+            segments = np.zeros((0, segment_resamples, 2), dtype=np.float32)
+        label["segments"] = segments
+        label["keypoints"] = keypoints
 
         return label
 
@@ -349,6 +434,8 @@ class YoloDataset(Dataset):
     def _mosaic4(self, label):
         cls4 = []
         bboxes4 = []
+        segments4 = []
+        keypoints4 = []
         s = self.imgsz
         border = (-self.imgsz // 2, -self.imgsz // 2)  # width, height
         yc, xc = (int(random.uniform(-x, 2 * s + x)) for x in border)  # mosaic center x, y
@@ -361,6 +448,8 @@ class YoloDataset(Dataset):
             h, w = labels_patch.pop("resized_shape")
             cls = labels_patch["cls"]
             bboxes = labels_patch["bboxes"]
+            segments = labels_patch["segments"]
+            keypoints = labels_patch["keypoints"]
 
             # if len(labels):
             #     # Convert normalized xywh to absolute xyxy
@@ -385,21 +474,77 @@ class YoloDataset(Dataset):
             padh = y1a - y1b
 
             if len(bboxes) and labels_patch["bbox_format"] == "xywh":
-                bboxes = xywhn2xyxy(bboxes, w, h, padw, padh)
+                # convert bbox
+                bboxes = xywh2xyxy(bboxes)
+                # denormalize
+                # denormalize
+                bboxes[:, 0] *= w
+                bboxes[:, 1] *= h
+                bboxes[:, 2] *= w
+                bboxes[:, 3] *= h
+                segments[..., 0] *= w
+                segments[..., 1] *= h
+                if keypoints is not None:
+                    keypoints[..., 0] *= w
+                    keypoints[..., 1] *= h
+                # add padding
+                bboxes[:, 0] += padw
+                bboxes[:, 1] += padh
+                bboxes[:, 2] += padw
+                bboxes[:, 3] += padh
+                segments[..., 0] += padw
+                segments[..., 1] += padh
+                if keypoints is not None:
+                    keypoints[..., 0] += padw
+                    keypoints[..., 1] += padh
+
+                # bboxes = xywhn2xyxy(bboxes, w, h, padw, padh)
                 # labels[:, 1:5] += (padw, padh, padw, padh)
             bboxes4.append(bboxes)
             cls4.append(cls)
+            segments4.append(segments)
+            if keypoints is not None:
+                keypoints4.append(keypoints)
 
+        # concatenate
         cls4 = np.concatenate(cls4, 0)
         bboxes4 = np.concatenate(bboxes4, 0)
-        np.clip(bboxes4, 0, 2 * s, out=bboxes4)
+        seg_len = [seg.shape[1] for seg in segments4]
+        if len(frozenset(seg_len)) > 1:  # resample segments if there's different length
+            max_len = max(seg_len)
+            segments4 = np.concatenate(
+                [
+                    (
+                        resample_segments(list(seg), max_len) if len(seg) else np.zeros((0, max_len, 2), dtype=np.float32)
+                    )  # re-generating empty segments
+                    for seg in segments4
+                ],
+                axis=0,
+            )
+        else:
+            segments4 = np.concatenate(segments4, axis=0)
+        keypoints4 = np.concatenate(keypoints, axis=0) if len(keypoints4) > 0 else None
 
+        # clip
+        np.clip(bboxes4, 0, 2 * s, out=bboxes4)
+        np.clip(segments4, 0, 2 * s, out=segments4)
+        if keypoints4 is not None:
+            # Set out of bounds visibility to zero
+            keypoints4[..., 2][
+                (keypoints4[..., 0] < 0) | (keypoints4[..., 0] > 2 * s) | (keypoints4[..., 1] < 0) | (keypoints4[..., 1] > 2 * s)
+            ] = 0.0
+            np.clip(keypoints4, 0, 2 * s, out=keypoints4)
+
+        # update label
         label["img"] = img4
         label["cls"] = cls4
         label["bboxes"] = bboxes4
+        label["segments"] = segments4
+        label["keypoints"] = keypoints4
         label["bbox_format"] = "xyxy"
         label["resized_shape"] = (self.imgsz * 2, self.imgsz * 2)
         label["mosaic_border"] = border
+        label["normalized"] = False
 
         return label
 
@@ -448,13 +593,51 @@ class YoloDataset(Dataset):
         if label.get("ratio_pad"):
             label["ratio_pad"] = (label["ratio_pad"], (left, top))  # for evaluation
 
+        # update label
         label["img"] = img
         label["resized_shape"] = new_shape
         bboxes = label["bboxes"]
+        segments = label["segments"]
+        keypoints = label["keypoints"]
         if len(bboxes) and label["bbox_format"] == "xywh":
-            bboxes = xywhn2xyxy(bboxes, w, h, left, top)
+            # convert bbox
+            bboxes = xywh2xyxy(bboxes)
+            # denormalize
+            bboxes[:, 0] *= w
+            bboxes[:, 1] *= h
+            bboxes[:, 2] *= w
+            bboxes[:, 3] *= h
+            segments[..., 0] *= w
+            segments[..., 1] *= h
+            if keypoints is not None:
+                keypoints[..., 0] *= w
+                keypoints[..., 1] *= h
+            # scale
+            scale_w, scale_h = ratio
+            bboxes[:, 0] *= scale_w
+            bboxes[:, 1] *= scale_h
+            bboxes[:, 2] *= scale_w
+            bboxes[:, 3] *= scale_h
+            segments[..., 0] *= scale_w
+            segments[..., 1] *= scale_h
+            if keypoints is not None:
+                keypoints[..., 0] *= scale_w
+                keypoints[..., 1] *= scale_h
+            # add padding
+            bboxes[:, 0] += left
+            bboxes[:, 1] += top
+            bboxes[:, 2] += left
+            bboxes[:, 3] += top
+            segments[..., 0] += left
+            segments[..., 1] += top
+            if keypoints is not None:
+                keypoints[..., 0] += left
+                keypoints[..., 1] += top
+
+            # bboxes = xywhn2xyxy(bboxes, w, h, left, top)
             label["bboxes"] = bboxes
             label["bbox_format"] = "xyxy"
+            label["normalized"] = False
         return label
 
     def _random_perspective(self, label, degrees=0.0, translate=0.1, scale=0.5, shear=0.0, perspective=0.0):
@@ -463,12 +646,29 @@ class YoloDataset(Dataset):
         img = label["img"]
         cls = label["cls"]
         bboxes = label["bboxes"]
+        segments = label["segments"]
+        keypoints = label["keypoints"]
         if label["bbox_format"] == "xywh":
-            bboxes = xywhn2xyxy(bboxes, img.shape[1], img.shape[0])
+            # convert bbox
+            bboxes = xywh2xyxy(bboxes)
+            # denormalize
+            w, h = img.shape[:2][::-1]
+            bboxes[:, 0] *= w
+            bboxes[:, 1] *= h
+            bboxes[:, 2] *= w
+            bboxes[:, 3] *= h
+            segments[..., 0] *= w
+            segments[..., 1] *= h
+            if keypoints is not None:
+                keypoints[..., 0] *= w
+                keypoints[..., 1] *= h
+            # bboxes = xywhn2xyxy(bboxes, img.shape[1], img.shape[0])
             label["bbox_format"] == "xyxy"
+            label["normalized"] = False
         border = label.pop("mosaic_border", (0, 0))
         size = img.shape[1] + border[1] * 2, img.shape[0] + border[0] * 2  # w, h
 
+        # affine transform
         # Center
         C = np.eye(3, dtype=np.float32)
 
@@ -487,7 +687,7 @@ class YoloDataset(Dataset):
         R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
 
         # Shear
-        S = np.eye(3)
+        S = np.eye(3, dtype=np.float32)
         S[0, 1] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # x shear
         S[1, 0] = math.tan(random.uniform(-shear, shear) * math.pi / 180)  # y shear
 
@@ -521,9 +721,51 @@ class YoloDataset(Dataset):
             x = xy[:, [0, 2, 4, 6]]
             y = xy[:, [1, 3, 5, 7]]
             new_bboxes = np.concatenate((x.min(1), y.min(1), x.max(1), y.max(1)), dtype=bboxes.dtype).reshape(4, n).T
+
+        # apply segments
+        # Update bboxes if there are segments.
+        if len(segments):
+            n, num = segments.shape[:2]
+            if n == 0:
+                new_bboxes = []
+                segments = segments
+            else:
+                xy = np.ones((n * num, 3), dtype=segments.dtype)
+                segments = segments.reshape(-1, 2)
+                xy[:, :2] = segments
+                xy = xy @ M.T  # transform
+                xy = xy[:, :2] / xy[:, 2:3]
+                segments = xy.reshape(n, -1, 2)
+                new_bboxes = np.stack([segment2box(xy, size[0], size[1]) for xy in segments], 0)
+                segments[..., 0] = segments[..., 0].clip(new_bboxes[:, 0:1], new_bboxes[:, 2:3])
+                segments[..., 1] = segments[..., 1].clip(new_bboxes[:, 1:2], new_bboxes[:, 3:4])
+
+        # apply keypoints
+        if keypoints is not None:
+            n, nkpt = keypoints.shape[:2]
+            if n == 0:
+                keypoints = keypoints
+            else:
+                xy = np.ones((n * nkpt, 3), dtype=keypoints.dtype)
+                visible = keypoints[..., 2].reshape(n * nkpt, 1)
+                xy[:, :2] = keypoints[..., :2].reshape(n * nkpt, 2)
+                xy = xy @ M.T  # transform
+                xy = xy[:, :2] / xy[:, 2:3]  # perspective rescale or affine
+                out_mask = (xy[:, 0] < 0) | (xy[:, 1] < 0) | (xy[:, 0] > size[0]) | (xy[:, 1] > size[1])
+                visible[out_mask] = 0
+                keypoints = np.concatenate([xy, visible], axis=-1).reshape(n, nkpt, 3)
+
         # clip
         new_bboxes[:, [0, 2]] = new_bboxes[:, [0, 2]].clip(0, size[0])
         new_bboxes[:, [1, 3]] = new_bboxes[:, [1, 3]].clip(0, size[1])
+        segments[..., 0] = segments[..., 0].clip(0, size[0])
+        segments[..., 1] = segments[..., 1].clip(0, size[1])
+        if keypoints is not None:
+            # Set out of bounds visibility to zero
+            keypoints[..., 2][(keypoints[..., 0] < 0) | (keypoints[..., 0] > size[0]) | (keypoints[..., 1] < 0) | (keypoints[..., 1] > size[1])] = 0.0
+            keypoints[..., 0] = keypoints[..., 0].clip(0, size[0])
+            keypoints[..., 1] = keypoints[..., 1].clip(0, size[1])
+
         # Filter bboxes
         bboxes[:, 0] *= s
         bboxes[:, 1] *= s
@@ -534,7 +776,7 @@ class YoloDataset(Dataset):
         box2 = new_bboxes.T
         wh_thr = 2
         ar_thr = 100
-        area_thr = 0.1
+        area_thr = 0.01 if len(segments) else 0.10
         eps = 1e-16
         w1, h1 = box1[2] - box1[0], box1[3] - box1[1]
         w2, h2 = box2[2] - box2[0], box2[3] - box2[1]
@@ -544,7 +786,9 @@ class YoloDataset(Dataset):
         label["img"] = img
         label["cls"] = cls[i]
         label["bboxes"] = new_bboxes[i]
-        label["resize_shape"] = img.shape[:2]
+        label["segments"] = segments[i] if len(segments) else segments
+        label["keypoints"] = keypoints[i] if keypoints is not None else None
+        label["resized_shape"] = img.shape[:2]
         return label
 
     def _random_hsv(self, label, hgain=0.5, sgain=0.5, vgain=0.5):
@@ -569,19 +813,43 @@ class YoloDataset(Dataset):
 
     def _random_horizontal_flip(self, label):
         img = label["img"]
+        h, w = img.shape[:2]
         bboxes = label["bboxes"]
+        segments = label["segments"]
+        keypoints = label["keypoints"]
         if label["bbox_format"] == "xywh":
-            bboxes = xywhn2xyxy(bboxes, img.shape[1], img.shape[0])
-        w = img.shape[1]
+            # convert bbox
+            bboxes = xywh2xyxy(bboxes)
+            # denormalize
+            bboxes[:, 0] *= w
+            bboxes[:, 1] *= h
+            bboxes[:, 2] *= w
+            bboxes[:, 3] *= h
+            segments[..., 0] *= w
+            segments[..., 1] *= h
+            if keypoints is not None:
+                keypoints[..., 0] *= w
+                keypoints[..., 1] *= h
+            label["bbox_format"] == "xyxy"
+            label["normalized"] = False
+            # bboxes = xywhn2xyxy(bboxes, img.shape[1], img.shape[0])
 
+        # flip coordinates horizontally
         img = np.fliplr(img)
         x1 = bboxes[:, 0].copy()
         x2 = bboxes[:, 2].copy()
         bboxes[:, 0] = w - x2
         bboxes[:, 2] = w - x1
+        segments[..., 0] = w - segments[..., 0]
+        if keypoints is not None:
+            keypoints[..., 0] = w - keypoints[..., 0]
+            if self.flip_idx is not None:
+                keypoints = np.ascontiguousarray(keypoints[:, self.flip_idx, :])
 
         label["img"] = np.ascontiguousarray(img)
         label["bboxes"] = bboxes
+        label["segments"] = segments
+        label["keypoints"] = keypoints
         return label
 
     @staticmethod
@@ -594,7 +862,7 @@ class YoloDataset(Dataset):
             value = values[i]
             if k in {"img"}:
                 value = torch.stack(value, 0)
-            if k in {"bboxes", "cls"}:
+            if k in {"masks", "keypoints", "bboxes", "cls", "segments", "obb"}:
                 value = torch.cat(value, 0)
             new_batch[k] = value
         new_batch["batch_idx"] = list(new_batch["batch_idx"])

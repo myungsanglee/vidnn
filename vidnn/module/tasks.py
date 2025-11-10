@@ -5,15 +5,15 @@ from torch import nn, optim
 import pytorch_lightning as pl
 import numpy as np
 
-from vidnn.nn.head import DetectHeadV1
-from vidnn.utils.loss import YoloDetectionLoss
+from vidnn.nn.head import DetectHeadV1, OBB
+from vidnn.utils.loss import DetectionLoss, OBBLoss
 from vidnn.utils.lr_scheduler import VidnnScheduler
 from vidnn.utils import LOGGER, ops
-from vidnn.utils.metrics import DetMetrics, box_iou
+from vidnn.utils.metrics import DetMetrics, box_iou, OBBMetrics, batch_probiou
 from vidnn.data.utils import load_image_from_source, letterbox
 
 
-class YoloDetector(pl.LightningModule):
+class DetectorModule(pl.LightningModule):
     def __init__(self, model, cfg, steps_per_epoch):
         super().__init__()
         self.save_hyperparameters(ignore="model")
@@ -29,7 +29,9 @@ class YoloDetector(pl.LightningModule):
 
             self.model.eval()  # Avoid changing batch statistics until training begins
             m.training = True  # Setting it to True to properly return strides
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.model(torch.zeros(1, 3, s, s))])  # forward
+            preds = model(torch.zeros(1, 3, s, s))
+            preds = preds[0] if isinstance(m, (OBB)) else preds
+            m.stride = torch.tensor([s / x.shape[-2] for x in preds])  # forward
             self.model.train()  # Set model back to training(default) mode
             m.bias_init()  # only run once
 
@@ -103,7 +105,13 @@ class YoloDetector(pl.LightningModule):
 
         # Log
         batch_size = batch["img"].shape[0]
-        self.log("train_loss", self.tloss.sum(), prog_bar=True, logger=True, batch_size=batch_size)
+        self.log(
+            "train_loss",
+            self.tloss.sum(),
+            prog_bar=True,
+            # logger=True,
+            batch_size=batch_size,
+        )
 
         return loss.sum()
 
@@ -129,7 +137,13 @@ class YoloDetector(pl.LightningModule):
         self.vloss = self.vloss if loss_length > 1 else torch.unsqueeze(self.vloss, 0)
 
         batch_size = batch["img"].shape[0]
-        self.log("val_loss", self.vloss.sum(), prog_bar=True, logger=True, batch_size=batch_size)
+        self.log(
+            "val_loss",
+            self.vloss.sum(),
+            prog_bar=True,
+            # logger=True,
+            batch_size=batch_size,
+        )
 
         self.update_metrics(preds, batch)
 
@@ -143,11 +157,17 @@ class YoloDetector(pl.LightningModule):
         fitness = stats["fitness"]
         self.print_results()
 
-        self.log("metrics/mAP50(B)", mAP50, prog_bar=False, logger=True)
-        self.log("metrics/mAP50-95(B)", mAP50_95, prog_bar=False, logger=True)
-        self.log("metrics/precision(B)", precision, prog_bar=False, logger=True)
-        self.log("metrics/recall(B)", recall, prog_bar=False, logger=True)
-        self.log("fitness", fitness, prog_bar=False, logger=False)
+        # self.log("metrics/mAP50(B)", mAP50, prog_bar=False, logger=True)
+        # self.log("metrics/mAP50-95(B)", mAP50_95, prog_bar=False, logger=True)
+        # self.log("metrics/precision(B)", precision, prog_bar=False, logger=True)
+        # self.log("metrics/recall(B)", recall, prog_bar=False, logger=True)
+        # self.log("fitness", fitness, prog_bar=False, logger=False)
+
+        self.log("metrics/mAP50(B)", mAP50)
+        self.log("metrics/mAP50-95(B)", mAP50_95)
+        self.log("metrics/precision(B)", precision)
+        self.log("metrics/recall(B)", recall)
+        self.log("fitness", fitness)
 
     def configure_optimizers(self):
         cfg = self.hparams.cfg
@@ -174,7 +194,10 @@ class YoloDetector(pl.LightningModule):
             cos_lr=cfg["cos_lr"],
         )
 
-        return {"optimizer": optim, "lr_scheduler": {"scheduler": scheduler, "interval": "step"}}
+        return {
+            "optimizer": optim,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        }
 
     def preprocess_batch(self, batch):
         """
@@ -244,7 +267,7 @@ class YoloDetector(pl.LightningModule):
 
     def init_criterion(self):
         """Initialize the loss criterion for the DetectionModel."""
-        return YoloDetectionLoss(self)
+        return DetectionLoss(self)
 
     def initialize_weights(self):
         """Initialize model weights to random values."""
@@ -389,7 +412,15 @@ class YoloDetector(pl.LightningModule):
         """Print training/validation set metrics per class."""
         LOGGER.info(("%22s" + "%11s" * 6) % ("Class", "Images", "Instances", "Box(P", "R", "mAP50", "mAP50-95)"))
         pf = "%22s" + "%11i" * 2 + "%11.3g" * len(self.metrics.keys)  # print format
-        LOGGER.info(pf % ("all", self.seen, self.metrics.nt_per_class.sum(), *self.metrics.mean_results()))
+        LOGGER.info(
+            pf
+            % (
+                "all",
+                self.seen,
+                self.metrics.nt_per_class.sum(),
+                *self.metrics.mean_results(),
+            )
+        )
         if self.metrics.nt_per_class.sum() == 0:
             LOGGER.warning(f"no labels found in detect set, can not compute metrics without labels")
 
@@ -434,7 +465,16 @@ class YoloDetector(pl.LightningModule):
                 else:  # weight (with decay)
                     g[0].append(param)
 
-        optimizers = {"Adam", "Adamax", "AdamW", "NAdam", "RAdam", "RMSProp", "SGD", "auto"}
+        optimizers = {
+            "Adam",
+            "Adamax",
+            "AdamW",
+            "NAdam",
+            "RAdam",
+            "RMSProp",
+            "SGD",
+            "auto",
+        }
         name = {x.lower(): x for x in optimizers}.get(name.lower())
         if name in {"Adam", "Adamax", "AdamW", "NAdam", "RAdam"}:
             optimizer = getattr(optim, name, optim.Adam)(g[2], lr=lr, betas=(momentum, 0.999), weight_decay=0.0)
@@ -452,3 +492,92 @@ class YoloDetector(pl.LightningModule):
             f"{len(g[1])} weight(decay=0.0), {len(g[0])} weight(decay={decay}), {len(g[2])} bias(decay=0.0)"
         )
         return optimizer
+
+
+class OBBModule(DetectorModule):
+    def __init__(self, model, cfg, steps_per_epoch):
+        super().__init__(model, cfg, steps_per_epoch)
+        self.metrics = OBBMetrics(names=cfg["names"])
+
+    def init_criterion(self):
+        """Initialize the loss criterion for the OBBModel."""
+        return OBBLoss(self)
+
+    def postprocess(self, preds):
+        """
+        Apply Non-maximum suppression to prediction outputs.
+
+        Args:
+            preds (torch.Tensor): Raw predictions from the model.
+
+        Returns:
+            (List[Dict[str, torch.Tensor]]): Processed predictions after NMS, where each dict contains
+                'bboxes', 'conf', 'cls', and 'extra' tensors.
+        """
+        outputs = ops.non_max_suppression(
+            preds,
+            self.cfg["conf"] if self.cfg["conf"] is not None else 0.001,
+            self.cfg["iou"],
+            nc=self.nc,
+            multi_label=True,
+            agnostic=False,
+            max_det=self.cfg["max_det"],
+            rotated=True,
+        )
+        preds = [{"bboxes": x[:, :4], "conf": x[:, 4], "cls": x[:, 5], "extra": x[:, 6:]} for x in outputs]
+        for pred in preds:
+            pred["bboxes"] = torch.cat([pred["bboxes"], pred.pop("extra")], dim=-1)  # concatenate angle
+        return preds
+
+    def _prepare_batch(self, si, batch):
+        """
+        Prepare batch data for OBB validation with proper scaling and formatting.
+
+        Args:
+            si (int): Batch index to process.
+            batch (dict[str, Any]): Dictionary containing batch data with keys:
+                - batch_idx: Tensor of batch indices
+                - cls: Tensor of class labels
+                - bboxes: Tensor of bounding boxes
+                - ori_shape: Original image shapes
+                - img: Batch of images
+                - ratio_pad: Ratio and padding information
+
+        Returns:
+            (dict[str, Any]): Prepared batch data with scaled bounding boxes and metadata.
+        """
+        idx = batch["batch_idx"] == si
+        cls = batch["cls"][idx].squeeze(-1)
+        bbox = batch["bboxes"][idx]
+        ori_shape = batch["ori_shape"][si]
+        imgsz = batch["img"].shape[2:]
+        ratio_pad = batch["ratio_pad"][si]
+        if len(cls):
+            bbox[..., :4].mul_(torch.tensor(imgsz, device=self.device)[[1, 0, 1, 0]])  # target boxes
+        return {
+            "cls": cls,
+            "bboxes": bbox,
+            "ori_shape": ori_shape,
+            "imgsz": imgsz,
+            "ratio_pad": ratio_pad,
+        }
+
+    def _process_batch(self, preds, batch):
+        """
+        Compute the correct prediction matrix for a batch of detections and ground truth bounding boxes.
+
+        Args:
+            preds (dict[str, torch.Tensor]): Prediction dictionary containing 'cls' and 'bboxes' keys with detected
+                class labels and bounding boxes.
+            batch (dict[str, torch.Tensor]): Batch dictionary containing 'cls' and 'bboxes' keys with ground truth
+                class labels and bounding boxes.
+
+        Returns:
+            (dict[str, np.ndarray]): Dictionary containing 'tp' key with the correct prediction matrix as a numpy
+                array with shape (N, 10), which includes 10 IoU levels for each detection, indicating the accuracy
+                of predictions compared to the ground truth.
+        """
+        if len(batch["cls"]) == 0 or len(preds["cls"]) == 0:
+            return {"tp": np.zeros((len(preds["cls"]), self.niou), dtype=bool)}
+        iou = batch_probiou(batch["bboxes"], preds["bboxes"])
+        return {"tp": self.match_predictions(preds["cls"], batch["cls"], iou).cpu().numpy()}

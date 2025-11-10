@@ -6,7 +6,7 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, Ea
 
 from vidnn.utils.yaml_helper import get_configs
 from vidnn.data.datamodule import YoloDataModule
-from vidnn.module.yolo_detector import YoloDetector
+from vidnn.module.tasks import DetectorModule
 from vidnn.models.detect.mobilenetv3_large_100_yolo import MobileNetV3Yolo
 
 import optuna
@@ -50,7 +50,7 @@ def objective(trial: optuna.trial.Trial):
 
     # Model
     model = MobileNetV3Yolo(num_classes=len(cfg["names"]))
-    model_module = YoloDetector(model=model, cfg=cfg, steps_per_epoch=len(train_dataloaders))
+    model_module = DetectorModule(model=model, cfg=cfg, steps_per_epoch=len(train_dataloaders))
     model_module = torch.compile(model_module)
 
     # Setup train

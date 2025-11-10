@@ -1,8 +1,6 @@
-import contextlib
 import math
 import re
 import time
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -11,63 +9,6 @@ import torch.nn.functional as F
 
 from vidnn.utils import LOGGER
 from vidnn.utils.metrics import batch_probiou
-
-
-class Profile(contextlib.ContextDecorator):
-    """
-    Ultralytics Profile class for timing code execution.
-
-    Use as a decorator with @Profile() or as a context manager with 'with Profile():'. Provides accurate timing
-    measurements with CUDA synchronization support for GPU operations.
-
-    Attributes:
-        t (float): Accumulated time in seconds.
-        device (torch.device): Device used for model inference.
-        cuda (bool): Whether CUDA is being used for timing synchronization.
-
-    Examples:
-        Use as a context manager to time code execution
-        >>> with Profile(device=device) as dt:
-        ...     pass  # slow operation here
-        >>> print(dt)  # prints "Elapsed time is 9.5367431640625e-07 s"
-
-        Use as a decorator to time function execution
-        >>> @Profile()
-        ... def slow_function():
-        ...     time.sleep(0.1)
-    """
-
-    def __init__(self, t: float = 0.0, device: Optional[torch.device] = None):
-        """
-        Initialize the Profile class.
-
-        Args:
-            t (float): Initial accumulated time in seconds.
-            device (torch.device, optional): Device used for model inference to enable CUDA synchronization.
-        """
-        self.t = t
-        self.device = device
-        self.cuda = bool(device and str(device).startswith("cuda"))
-
-    def __enter__(self):
-        """Start timing."""
-        self.start = self.time()
-        return self
-
-    def __exit__(self, type, value, traceback):  # noqa
-        """Stop timing."""
-        self.dt = self.time() - self.start  # delta-time
-        self.t += self.dt  # accumulate dt
-
-    def __str__(self):
-        """Return a human-readable string representing the accumulated elapsed time."""
-        return f"Elapsed time is {self.t} s"
-
-    def time(self):
-        """Get current time with CUDA synchronization if applicable."""
-        if self.cuda:
-            torch.cuda.synchronize(self.device)
-        return time.perf_counter()
 
 
 def segment2box(segment, width: int = 640, height: int = 640):
@@ -231,7 +172,7 @@ def non_max_suppression(
             containing (x1, y1, x2, y2, confidence, class, mask1, mask2, ...).
         keepi (List[torch.Tensor]): Indices of kept detections if return_idxs=True.
     """
-    import torchvision  # scope for faster 'import ultralytics'
+    import torchvision
 
     # Checks
     assert 0 <= conf_thres <= 1, f"Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0"
@@ -266,7 +207,7 @@ def non_max_suppression(
         else:
             prediction = torch.cat((xywh2xyxy(prediction[..., :4]), prediction[..., 4:]), dim=-1)  # xywh to xyxy
 
-    # t = time.time()
+    t = time.time()
     output = [torch.zeros((0, 6 + extra), device=prediction.device)] * bs
     keepi = [torch.zeros((0, 1), device=prediction.device)] * bs  # to store the kept idxs
     for xi, (x, xk) in enumerate(zip(prediction, xinds)):  # image index, (preds, preds indices)
@@ -325,9 +266,9 @@ def non_max_suppression(
         i = i[:max_det]  # limit detections
 
         output[xi], keepi[xi] = x[i], xk[i].reshape(-1)
-        # if (time.time() - t) > time_limit:
-        #     LOGGER.warning(f"NMS time limit {time_limit:.3f}s exceeded")
-        #     break  # time limit exceeded
+        if (time.time() - t) > time_limit:
+            LOGGER.warning(f"NMS time limit {time_limit:.3f}s exceeded")
+            break  # time limit exceeded
 
     return (output, keepi) if return_idxs else output
 

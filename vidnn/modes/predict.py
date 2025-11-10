@@ -3,20 +3,22 @@ import torch
 import cv2
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint, EarlyStopping
-
-from torchinfo import summary
+from pytorch_lightning.callbacks import (
+    LearningRateMonitor,
+    ModelCheckpoint,
+    EarlyStopping,
+)
 
 from vidnn.utils.yaml_helper import get_configs
 from vidnn.data.datamodule import YoloDataModule
 from vidnn.models.detect.mobilenetv3_yolov8 import YOLOv8MobileNet
-from vidnn.module.yolo_detector import YoloDetector
+from vidnn.module.tasks import DetectorModule
 
 
 def predict(cfg, ckpt):
     # Model
     model = YOLOv8MobileNet(num_classes=len(cfg["names"]))
-    model_module = YoloDetector.load_from_checkpoint(
+    model_module = DetectorModule.load_from_checkpoint(
         checkpoint_path=ckpt,
         model=model,
         cfg=cfg,

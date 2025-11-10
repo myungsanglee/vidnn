@@ -1,12 +1,13 @@
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 import os
+import torch
 
 from .dataset import YoloDataset
 
 
 class YoloDataModule(pl.LightningDataModule):
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
         self.train_path = os.path.join(self.cfg["path"], self.cfg["train"])
@@ -14,8 +15,9 @@ class YoloDataModule(pl.LightningDataModule):
         self.test_path = os.path.join(self.cfg["path"], self.cfg["test"]) if self.cfg["test"] is not None else None
         self.batch_size = self.cfg["batch_size"]
         self.num_workers = self.cfg["workers"]
+        # self.pin_memory = not torch.backends.mps.is_available()
 
-    def setup(self, stage: str = None):
+    def setup(self, stage=None):
         if stage == "fit" or stage is None:
             self.train_dataset = YoloDataset(
                 self.train_path,
@@ -48,8 +50,9 @@ class YoloDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             collate_fn=self.train_dataset.collate_fn,
-            pin_memory=True,
+            pin_memory=False if torch.backends.mps.is_available() else True,
             shuffle=True,
+            persistent_workers=True,
         )
 
     def val_dataloader(self):
@@ -58,7 +61,8 @@ class YoloDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             collate_fn=self.val_dataset.collate_fn,
-            pin_memory=True,
+            pin_memory=False if torch.backends.mps.is_available() else True,
+            persistent_workers=True,
         )
 
     def test_dataloader(self):
@@ -67,5 +71,6 @@ class YoloDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             collate_fn=self.test_dataset.collate_fn,
-            pin_memory=True,
+            pin_memory=False if torch.backends.mps.is_available() else True,
+            persistent_workers=True,
         )

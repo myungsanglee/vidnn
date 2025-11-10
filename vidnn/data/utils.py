@@ -151,31 +151,6 @@ def is_dir_writeable(dir_path):
     return os.access(str(dir_path), os.W_OK)
 
 
-def xywhn2xyxy(x, w=640, h=640, padw=0, padh=0):
-    """Convert nx4 boxes from [x, y, w, h] normalized to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right."""
-    assert x.shape[-1] == 4, f"input shape last dimension expected 4 but input shape is {x.shape}"
-    y = np.empty_like(x, dtype=np.float32)  # faster than clone/copy
-    y[..., 0] = w * (x[..., 0] - x[..., 2] / 2) + padw  # top left x
-    y[..., 1] = h * (x[..., 1] - x[..., 3] / 2) + padh  # top left y
-    y[..., 2] = w * (x[..., 0] + x[..., 2] / 2) + padw  # bottom right x
-    y[..., 3] = h * (x[..., 1] + x[..., 3] / 2) + padh  # bottom right y
-    return y
-
-
-def xyxy2xywhn(x, w=640, h=640, clip=False, eps=0.0):
-    """Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] normalized where xy1=top-left, xy2=bottom-right."""
-    if clip:
-        # x = np.clip(x, 0, (w - 1, h - 1, w - 1, h - 1))
-        x[..., [0, 2]] = x[..., [0, 2]].clip(0, w - eps)  # x1, x2
-        x[..., [1, 3]] = x[..., [1, 3]].clip(0, h - eps)  # y1, y2
-    y = np.empty_like(x, dtype=np.float32)  # faster than clone/copy
-    y[..., 0] = ((x[..., 0] + x[..., 2]) / 2) / w  # x center
-    y[..., 1] = ((x[..., 1] + x[..., 3]) / 2) / h  # y center
-    y[..., 2] = (x[..., 2] - x[..., 0]) / w  # width
-    y[..., 3] = (x[..., 3] - x[..., 1]) / h  # height
-    return y
-
-
 def load_image_from_source(source, imgsz=640):
     if isinstance(source, str):
         im = imread(source)
@@ -281,6 +256,73 @@ def letterbox(
 
     # return img, ratio, (dw, dh)
     return img
+
+
+def polygon2mask(imgsz: tuple[int, int], polygons: list[np.ndarray], color: int = 1, downsample_ratio: int = 1) -> np.ndarray:
+    """
+    Convert a list of polygons to a binary mask of the specified image size.
+
+    Args:
+        imgsz (tuple[int, int]): The size of the image as (height, width).
+        polygons (list[np.ndarray]): A list of polygons. Each polygon is an array with shape (N, M), where
+                                     N is the number of polygons, and M is the number of points such that M % 2 = 0.
+        color (int, optional): The color value to fill in the polygons on the mask.
+        downsample_ratio (int, optional): Factor by which to downsample the mask.
+
+    Returns:
+        (np.ndarray): A binary mask of the specified image size with the polygons filled in.
+    """
+    mask = np.zeros(imgsz, dtype=np.uint8)
+    polygons = np.asarray(polygons, dtype=np.int32)
+    polygons = polygons.reshape((polygons.shape[0], -1, 2))
+    cv2.fillPoly(mask, polygons, color=color)
+    nh, nw = (imgsz[0] // downsample_ratio, imgsz[1] // downsample_ratio)
+    # Note: fillPoly first then resize is trying to keep the same loss calculation method when mask-ratio=1
+    return cv2.resize(mask, (nw, nh))
+
+
+def polygons2masks(imgsz: tuple[int, int], polygons: list[np.ndarray], color: int, downsample_ratio: int = 1) -> np.ndarray:
+    """
+    Convert a list of polygons to a set of binary masks of the specified image size.
+
+    Args:
+        imgsz (tuple[int, int]): The size of the image as (height, width).
+        polygons (list[np.ndarray]): A list of polygons. Each polygon is an array with shape (N, M), where
+                                     N is the number of polygons, and M is the number of points such that M % 2 = 0.
+        color (int): The color value to fill in the polygons on the masks.
+        downsample_ratio (int, optional): Factor by which to downsample each mask.
+
+    Returns:
+        (np.ndarray): A set of binary masks of the specified image size with the polygons filled in.
+    """
+    return np.array([polygon2mask(imgsz, [x.reshape(-1)], color, downsample_ratio) for x in polygons])
+
+
+def polygons2masks_overlap(imgsz: tuple[int, int], segments: list[np.ndarray], downsample_ratio: int = 1) -> tuple[np.ndarray, np.ndarray]:
+    """Return a (640, 640) overlap mask."""
+    masks = np.zeros(
+        (imgsz[0] // downsample_ratio, imgsz[1] // downsample_ratio),
+        dtype=np.int32 if len(segments) > 255 else np.uint8,
+    )
+    areas = []
+    ms = []
+    for segment in segments:
+        mask = polygon2mask(
+            imgsz,
+            [segment.reshape(-1)],
+            downsample_ratio=downsample_ratio,
+            color=1,
+        )
+        ms.append(mask.astype(masks.dtype))
+        areas.append(mask.sum())
+    areas = np.asarray(areas)
+    index = np.argsort(-areas)
+    ms = np.array(ms)[index]
+    for i in range(len(segments)):
+        mask = ms[i] * (i + 1)
+        masks = masks + mask
+        masks = np.clip(masks, a_min=0, a_max=i + 1)
+    return masks, index
 
 
 # def random_perspective(im, targets=(), degrees=10, translate=0.1, scale=0.1, shear=10, perspective=0.0):

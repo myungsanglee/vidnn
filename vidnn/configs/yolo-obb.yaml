@@ -1,9 +1,9 @@
 # Model settings -------------------------------------------------------------------------------------------------------
-model : mobilenetv3_large_100_yolo # (str) model name to be trained
+model : mobilenetv3_large_100_obb # (str) model name to be trained
 ckpt : # (str, optional) path to weights file for transfer learning or weight loading
 # ckpt : /mnt/michael/vidnn/runs/lightning_logs/version_1/checkpoints/last.ckpt # (str, optional) path to weights file for transfer learning or weight loading
 # ckpt : tmp/mobilenetv3_large_100_yolo/weights/version_12/last.ckpt # (str, optional) path to weights file for transfer learning or weight loading
-task : detect # (str) detect, segment, classify, pose, obb
+task : obb # (str) detect, segment, classify, pose, obb
 
 # Train settings -------------------------------------------------------------------------------------------------------
 epochs: 20 # (int) number of epochs to train for
@@ -66,7 +66,7 @@ mixup: 0.0 # (float) image mixup (probability)
 cutmix: 0.0 # (float) image cutmix (probability)
 
 # Dataset -------------------------------------------------------------------------------------------------------------
-path: ../datasets/coco8 # dataset root dir
+path: ../datasets/dota8 # dataset root dir
 train: "images/train" # train images
 val: "images/val" # val images
 test: # test images (optional)
@@ -78,83 +78,18 @@ test: # test images (optional)
 
 # Classes
 names:
-  0: person
-  1: bicycle
-  2: car
-  3: motorcycle
-  4: airplane
-  5: bus
-  6: train
-  7: truck
-  8: boat
-  9: traffic light
-  10: fire hydrant
-  11: stop sign
-  12: parking meter
-  13: bench
-  14: bird
-  15: cat
-  16: dog
-  17: horse
-  18: sheep
-  19: cow
-  20: elephant
-  21: bear
-  22: zebra
-  23: giraffe
-  24: backpack
-  25: umbrella
-  26: handbag
-  27: tie
-  28: suitcase
-  29: frisbee
-  30: skis
-  31: snowboard
-  32: sports ball
-  33: kite
-  34: baseball bat
-  35: baseball glove
-  36: skateboard
-  37: surfboard
-  38: tennis racket
-  39: bottle
-  40: wine glass
-  41: cup
-  42: fork
-  43: knife
-  44: spoon
-  45: bowl
-  46: banana
-  47: apple
-  48: sandwich
-  49: orange
-  50: broccoli
-  51: carrot
-  52: hot dog
-  53: pizza
-  54: donut
-  55: cake
-  56: chair
-  57: couch
-  58: potted plant
-  59: bed
-  60: dining table
-  61: toilet
-  62: tv
-  63: laptop
-  64: mouse
-  65: remote
-  66: keyboard
-  67: cell phone
-  68: microwave
-  69: oven
-  70: toaster
-  71: sink
-  72: refrigerator
-  73: book
-  74: clock
-  75: vase
-  76: scissors
-  77: teddy bear
-  78: hair drier
-  79: toothbrush
+  0: plane
+  1: ship
+  2: storage tank
+  3: baseball diamond
+  4: tennis court
+  5: basketball court
+  6: ground track field
+  7: harbor
+  8: bridge
+  9: large vehicle
+  10: small vehicle
+  11: helicopter
+  12: roundabout
+  13: soccer ball field
+  14: swimming pool

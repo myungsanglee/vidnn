@@ -8,7 +8,7 @@ from vidnn.utils.yaml_helper import get_configs
 
 
 def check_dataloader():
-    yaml_path = "/mnt/michael/vidnn/vidnn/configs/yolo.yaml"
+    yaml_path = "vidnn/configs/yolo.yaml"
     cfg = get_configs(yaml_path)
 
     print("Initializing YoloDataModule with v8 augmentations...")

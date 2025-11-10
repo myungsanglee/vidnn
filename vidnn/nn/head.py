@@ -8,6 +8,31 @@ from vidnn.utils.tal import dist2bbox, dist2rbox, make_anchors
 
 
 class DetectHeadV1(nn.Module):
+    """
+    Detect head for object detection models.
+
+    This class implements the detection head used in YOLO models for predicting bounding boxes and class probabilities.
+    It supports both training and inference modes
+
+    Attributes:
+        max_det (int): Maximum detections per image.
+        shape (tuple): Input shape.
+        anchors (torch.Tensor): Anchor points.
+        strides (torch.Tensor): Feature map strides.
+        num_classes (int): Number of classes.
+        num_heads (int): Number of detection layers.
+        reg_max (int): DFL channels.
+        num_outputs (int): Number of outputs per anchor.
+        stride (torch.Tensor): Strides computed during build.
+        cv2 (nn.ModuleList): Convolution layers for box regression.
+        cv3 (nn.ModuleList): Convolution layers for classification.
+        dfl (nn.Module): Distribution Focal Loss layer.
+
+    Methods:
+        forward: Perform forward pass and return predictions.
+        bias_init: Initialize detection head biases.
+        decode_bboxes: Decode bounding boxes from predictions.
+    """
 
     max_det = 300  # max_det
     shape = None
@@ -15,6 +40,13 @@ class DetectHeadV1(nn.Module):
     strides = torch.empty(0)  # init
 
     def __init__(self, num_classes, in_channels, reg_max=16):  # in_channels: [P3_넥_채널, P4_넥_채널, P5_넥_채널]
+        """
+        Initialize the detection layer with specified number of classes and channels.
+
+        Args:
+            num_classes (int): Number of classes.
+            in_channels (tuple): Tuple of channel sizes from backbone feature maps.
+        """
         super().__init__()
         self.num_classes = num_classes
         self.num_heads = len(in_channels)  # number of detection layers 3개의 출력 스케일 (P3, P4, P5)
@@ -60,3 +92,53 @@ class DetectHeadV1(nn.Module):
     def decode_bboxes(self, bboxes, anchors, xywh=True):
         """Decode bounding boxes from predictions."""
         return dist2bbox(bboxes, anchors, xywh=xywh, dim=1)
+
+
+class OBB(DetectHeadV1):
+    """
+    OBB detection head for detection with rotation models.
+
+    This class extends the Detect head to include oriented bounding box prediction with rotation angles.
+
+    Attributes:
+        num_extra (int): Number of extra parameters.
+        cv4 (nn.ModuleList): Convolution layers for angle prediction.
+        angle (torch.Tensor): Predicted rotation angles.
+
+    Methods:
+        forward: Concatenate and return predicted bounding boxes and class probabilities.
+        decode_bboxes: Decode rotated bounding boxes.
+    """
+
+    def __init__(self, num_classes=80, num_extra=1, in_channels=()):
+        """
+        Initialize OBB with number of classes `nc` and layer channels `ch`.
+
+        Args:
+            num_classes (int): Number of classes.
+            num_extra (int): Number of extra parameters.
+            in_channels (tuple): Tuple of channel sizes from backbone feature maps.
+        """
+        super().__init__(num_classes, in_channels)
+        self.num_extra = num_extra  # number of extra parameters
+
+        c4 = max(in_channels[0] // 4, self.num_extra)
+        self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.num_extra, 1)) for x in in_channels)
+
+    def forward(self, x):
+        """Concatenate and return predicted bounding boxes and class probabilities."""
+        bs = x[0].shape[0]  # batch size
+        angle = torch.cat([self.cv4[i](x[i]).view(bs, self.num_extra, -1) for i in range(self.num_heads)], 2)  # OBB theta logits
+        # NOTE: set `angle` as an attribute so that `decode_bboxes` could use it.
+        angle = (angle.sigmoid() - 0.25) * math.pi  # [-pi/4, 3pi/4]
+        # angle = angle.sigmoid() * math.pi / 2  # [0, pi/2]
+        if not self.training:
+            self.angle = angle
+        x = DetectHeadV1.forward(self, x)
+        if self.training:
+            return x, angle
+        return (torch.cat([x[0], angle], 1), (x[1], angle))
+
+    def decode_bboxes(self, bboxes, anchors):
+        """Decode rotated bounding boxes."""
+        return dist2rbox(bboxes, self.angle, anchors, dim=1)
