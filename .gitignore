@@ -1,8 +1,10 @@
 # Michael Setting
 runs/
+optuna/
 *.jpg
 *.png
 .python-version
+*.db
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

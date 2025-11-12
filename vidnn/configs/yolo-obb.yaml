@@ -1,8 +1,7 @@
 # Model settings -------------------------------------------------------------------------------------------------------
 model : mobilenetv3_large_100_obb # (str) model name to be trained
 ckpt : # (str, optional) path to weights file for transfer learning or weight loading
-# ckpt : /mnt/michael/vidnn/runs/lightning_logs/version_1/checkpoints/last.ckpt # (str, optional) path to weights file for transfer learning or weight loading
-# ckpt : tmp/mobilenetv3_large_100_yolo/weights/version_12/last.ckpt # (str, optional) path to weights file for transfer learning or weight loading
+# ckpt : runs/mobilenetv3_large_100_obb/weights/version_0/last.ckpt # (str, optional) path to weights file for transfer learning or weight loading
 task : obb # (str) detect, segment, classify, pose, obb
 
 # Train settings -------------------------------------------------------------------------------------------------------
@@ -18,9 +17,9 @@ close_mosaic: 10 # (int) disable mosaic augmentation for final epochs (0 to disa
 single_cls: False # (bool) train multi-class data as single-class
 multi_scale: False # (bool) Whether to use multiscale during training
 optimizer: SGD # (str) optimizer to use, choices=[SGD, Adam, Adamax, AdamW, NAdam, RAdam, RMSProp]
-save_dir : tmp # (str) dir for saving log, weights
+save_dir : runs # (str) dir for saving log, weights
 # save_dir : /mnt/michael/vidnn/tmp # (str) dir for saving log, weights
-version : 1 # (int) version number for resume training
+version : 0 # (int) version number for resume training
 resume: False # (bool) resume training from last checkpoint
 trainer_options: # Pytorch Lightning trainer options
   accelerator: auto # 'auto', 'gpu', 'cpu'

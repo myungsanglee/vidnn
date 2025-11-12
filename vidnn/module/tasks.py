@@ -78,8 +78,9 @@ class DetectorModule(pl.LightningModule):
             iou_thres=iou,
             max_det=max_det,
         )
-        preds[0][:, :4] = ops.scale_boxes(img.shape[2:], preds[0][:, :4], orig_img.shape)
-        return preds, orig_img
+        pred = preds[0]
+        pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+        return pred, orig_img
 
     def on_train_epoch_start(self):
         self.tloss = None
@@ -498,6 +499,38 @@ class OBBModule(DetectorModule):
     def __init__(self, model, cfg, steps_per_epoch):
         super().__init__(model, cfg, steps_per_epoch)
         self.metrics = OBBMetrics(names=cfg["names"])
+
+    def predict(self, source, conf=0.25, iou=0.6, imgsz=640, max_det=300):
+        # preprocess
+        img, orig_img = load_image_from_source(source, imgsz)
+        img = letterbox(img, imgsz)
+        if len(img.shape) < 3:
+            img = np.expand_dims(img, -1)
+        img = img.transpose(2, 0, 1)
+        img = np.ascontiguousarray(img[::-1] if img.shape[0] == 3 else img)
+        img = torch.from_numpy(img)
+        img = img.unsqueeze(0)
+        if getattr(self, "device", None) is None:
+            self.device = next(self.parameters()).device
+        img = img.to(self.device, non_blocking=True).float() / 255
+
+        # inference
+        preds = self.forward(img)
+
+        # Postprocess
+        preds = ops.non_max_suppression(
+            preds,
+            conf_thres=conf,
+            iou_thres=iou,
+            max_det=max_det,
+            nc=len(self.cfg["names"]),
+            rotated=True,
+        )
+        pred = preds[0]
+        rboxes = ops.regularize_rboxes(torch.cat([pred[:, :4], pred[:, -1:]], dim=-1))
+        rboxes[:, :4] = ops.scale_boxes(img.shape[2:], rboxes[:, :4], orig_img.shape, xywh=True)
+        obb = torch.cat([rboxes, pred[:, 4:6]], dim=-1)
+        return obb, orig_img
 
     def init_criterion(self):
         """Initialize the loss criterion for the OBBModel."""

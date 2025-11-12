@@ -1,41 +1,35 @@
 import time
 import torch
 import cv2
-import pytorch_lightning as pl
-from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.callbacks import (
-    LearningRateMonitor,
-    ModelCheckpoint,
-    EarlyStopping,
-)
 
+from vidnn.utils import check_configs
 from vidnn.utils.yaml_helper import get_configs
-from vidnn.data.datamodule import YoloDataModule
-from vidnn.models.detect.mobilenetv3_yolov8 import YOLOv8MobileNet
-from vidnn.module.tasks import DetectorModule
+from vidnn.utils.module_select import get_data_module, get_model, get_model_module
 
 
-def predict(cfg, ckpt):
+def predict(cfg):
+    # Check cfg
+    cfg = check_configs(cfg)
+
     # Model
-    model = YOLOv8MobileNet(num_classes=len(cfg["names"]))
-    model_module = DetectorModule.load_from_checkpoint(
-        checkpoint_path=ckpt,
-        model=model,
-        cfg=cfg,
-        steps_per_epoch=0,
-    )
+    model = get_model(cfg)
+    model_module = get_model_module(model=model, cfg=cfg, steps_per_epoch=1)
     model_module.eval()
-    if torch.cuda.is_available:
-        model_module = model_module.cuda()
+    if torch.cuda.is_available():
+        model_module = model_module.to(torch.device("cuda"))
+    elif torch.backends.mps.is_available():
+        model_module = model_module.to(torch.device("mps"))
 
     # Image
-    img_path = "/mnt/michael/vidnn/vidnn/bus.jpg"
-    # img_path = "/mnt/michael/vidnn/vidnn/zidane.jpg"
+    img_path = "/Users/michael/Project/datasets/images/bus.jpg"
+    # img_path = "/Users/michael/Project/datasets/images/zidane.jpg"
+    # img_path = "/Users/michael/Project/datasets/images/test.jpg"
 
     # Inference
     with torch.no_grad():
-        preds, orig_img = model_module.predict(img_path, imgsz=cfg["imgsz"])
-    pred = preds[0].cpu().numpy()
+        pred, orig_img = model_module.predict(img_path, imgsz=cfg["imgsz"])
+    pred = pred.cpu().numpy()
+    print(pred)
     boxes = pred[:, :4]
     confs = pred[:, 4]
     classes = pred[:, 5]
@@ -66,6 +60,7 @@ def predict(cfg, ckpt):
 
     cv2.imshow("Predict", orig_img)
     key = cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
     # Check inference time
     # time_list = []
@@ -87,6 +82,6 @@ if __name__ == "__main__":
     # cfg = get_configs(args.cfg)
     # val(cfg, args.ckpt)
 
-    cfg = get_configs("/mnt/michael/vidnn/vidnn/configs/yolo.yaml")
-    ckpt = "/mnt/michael/vidnn/runs/lightning_logs/version_1/checkpoints/last.ckpt"
-    predict(cfg, ckpt)
+    cfg = get_configs("vidnn/configs/yolo.yaml")
+    # cfg = get_configs("vidnn/configs/yolo-obb.yaml")
+    predict(cfg)
