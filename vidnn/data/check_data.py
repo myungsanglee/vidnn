@@ -31,7 +31,7 @@ def main(cfg, mode="train"):
         return
 
     for batch in dataloader:
-        images, bboxes, batch_idx, cls = batch["img"], batch["bboxes"], batch["batch_idx"], batch["cls"]
+        images, bboxes, batch_idx, cls, img_file = batch["img"], batch["bboxes"], batch["batch_idx"], batch["cls"], batch["im_file"]
         for i, image in enumerate(images):
             # Convert tensor to numpy array for visualization
             img = image.permute(1, 2, 0).numpy().copy()
@@ -39,7 +39,7 @@ def main(cfg, mode="train"):
 
             # Get indices
             indices = torch.where(batch_idx == i)[0]
-            tmp_bboxes, tmp_cls = bboxes[indices], cls[indices]
+            tmp_bboxes, tmp_cls, tmp_img_file = bboxes[indices], cls[indices], img_file[i]
 
             # Denormalize bboxes
             h, w, _ = img.shape
@@ -83,11 +83,12 @@ def main(cfg, mode="train"):
                     img_num = int(number_str) + 1
                 save_img_filename = os.path.join(save_dir, f"img_{img_num:05d}.jpg")
                 cv2.imwrite(save_img_filename, img)
+
     cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    cfg = get_configs("vidnn/configs/yolo.yaml")
-    # cfg = get_configs("vidnn/configs/yolo-obb.yaml")
+    # cfg = get_configs("vidnn/configs/yolo.yaml")
+    cfg = get_configs("vidnn/configs/yolo-obb.yaml")
     main(cfg)
     # main(cfg, "val")

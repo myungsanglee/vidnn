@@ -284,7 +284,7 @@ class YoloDataset(Dataset):
         labels = cache["labels"]
         if not labels:
             raise RuntimeError(f"No valid images found in {cache_path}. Images with incorrectly formatted labels are ignored.")
-        self.im_files = [lb["im_file"] for lb in labels]  # update im_files
+        self.img_files = [lb["im_file"] for lb in labels]  # update im_files
 
         # Check if the dataset is all boxes or all segments
         lengths = ((len(lb["cls"]), len(lb["bboxes"]), len(lb["segments"])) for lb in labels)

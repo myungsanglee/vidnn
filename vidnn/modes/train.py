@@ -102,6 +102,6 @@ if __name__ == "__main__":
     # args = parser.parse_args()
     # cfg = get_configs(args.cfg)
 
-    cfg = get_configs("vidnn/configs/yolo.yaml")
-    # cfg = get_configs("vidnn/configs/yolo-obb.yaml")
+    # cfg = get_configs("vidnn/configs/yolo.yaml")
+    cfg = get_configs("vidnn/configs/yolo-obb.yaml")
     train(cfg)

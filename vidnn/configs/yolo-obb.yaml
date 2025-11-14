@@ -5,10 +5,10 @@ ckpt : # (str, optional) path to weights file for transfer learning or weight lo
 task : obb # (str) detect, segment, classify, pose, obb
 
 # Train settings -------------------------------------------------------------------------------------------------------
-epochs: 20 # (int) number of epochs to train for
-patience: 20 # (int) epochs to wait for no observable improvement for early stopping of training
-batch_size: 2 # (int) number of images per batch
-imgsz: 640 # (int) input images size as int for train and val modes
+epochs: 100 # (int) number of epochs to train for
+patience: 10 # (int) epochs to wait for no observable improvement for early stopping of training
+batch_size: 32 # (int) number of images per batch
+imgsz: 1024 # (int) input images size as int for train and val modes
 channels: 3 # (int) input images channels as int
 workers: 8 # (int) number of worker threads for data loading (per RANK if DDP)
 seed: 0 # (int) random seed for reproducibility
@@ -19,8 +19,8 @@ multi_scale: False # (bool) Whether to use multiscale during training
 optimizer: SGD # (str) optimizer to use, choices=[SGD, Adam, Adamax, AdamW, NAdam, RAdam, RMSProp]
 save_dir : runs # (str) dir for saving log, weights
 # save_dir : /mnt/michael/vidnn/tmp # (str) dir for saving log, weights
-version : 0 # (int) version number for resume training
 resume: False # (bool) resume training from last checkpoint
+version : 0 # (int) version number for resume training
 trainer_options: # Pytorch Lightning trainer options
   accelerator: auto # 'auto', 'gpu', 'cpu'
   # devices: [0] # 'auto': use all, [0]: use 0 gpu, [0, 1]: use 0, 1 gpus
@@ -65,15 +65,15 @@ mixup: 0.0 # (float) image mixup (probability)
 cutmix: 0.0 # (float) image cutmix (probability)
 
 # Dataset -------------------------------------------------------------------------------------------------------------
-path: ../datasets/dota8 # dataset root dir
-train: "images/train" # train images
-val: "images/val" # val images
-test: # test images (optional)
-
-# path: /mnt/michael/datasets/coco # dataset root dir
-# train: train2017.txt # train images
-# val: val2017.txt # val images
+# path: ../datasets/DOTAv1 # dataset root dir
+# train: images/train # train images
+# val: images/val # val images
 # test: # test images (optional)
+
+path: ../datasets/DOTAv1-split # dataset root dir
+train: images/train # train images
+val: images/val # val images
+test: # test images (optional)
 
 # Classes
 names:

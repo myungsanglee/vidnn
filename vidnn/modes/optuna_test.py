@@ -26,7 +26,7 @@ class PatchedPruningCallback(Callback):
         self._pruning_callback.on_validation_end(trainer, pl_module)
 
 
-def objective(trial: optuna.trial.Trial):
+def objective(trial: optuna.trial.Trial, cfg: dict):
     # === 1. 하이퍼파라미터 제안 ===
     lr0 = trial.suggest_float("lr0", 1e-3, 1e-2, log=True)
     momentum = trial.suggest_float("momentum", 9e-1, 99e-2, log=True)
@@ -35,15 +35,15 @@ def objective(trial: optuna.trial.Trial):
     cos_lr = trial.suggest_categorical("cos_lr", [True, False])
 
     # Get config
-    cfg = get_configs("vidnn/configs/yolo.yaml")
-    cfg = check_configs(cfg)
+    # cfg = get_configs(cfg_path)
+    # cfg = check_configs(cfg)
     cfg["lr0"] = lr0
     cfg["momentum"] = momentum
     cfg["weight_decay"] = weight_decay
     cfg["optimizer"] = optimizer
     cfg["cos_lr"] = cos_lr
     # set for optuna
-    cfg["epochs"] = 10
+    cfg["epochs"] = 100
     cfg["patience"] = 10
     cfg["save_dir"] = "optuna"
 
@@ -122,18 +122,30 @@ def objective(trial: optuna.trial.Trial):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n-trials", type=int, default=2, help="Number of trials to run.")
+    parser.add_argument("--n-trials", type=int, default=20, help="Number of trials to run.")
     parser.add_argument("--study-name", type=str, default="detect", help="Name of the study.")
-    parser.add_argument("--storage", type=str, default="sqlite:///optuna.db", help="Database URL for Optuna storage.")
     parser.add_argument("--resume-trial", type=int, help="Specify a trial number to resume.")
+    parser.add_argument("--config", type=str, default="vidnn/configs/yolo.yaml", help="Path to the config file.")
     args = parser.parse_args()
+
+    # get cfg
+    cfg = get_configs(args.config)
+    cfg = check_configs(cfg)
+    print(type(cfg))
+
+    # DB 저장 경로 설정
+    save_dir = "optuna"  # objective 함수와 일관성 유지
+    study_name = args.study_name
+    db_dir = os.path.join(save_dir, study_name, cfg["model"])
+    os.makedirs(db_dir, exist_ok=True)
+    storage_name = f"sqlite:///{os.path.join(db_dir, 'optuna.db')}"
 
     pruner = optuna.pruners.MedianPruner()
 
     # 1. Study 생성 또는 로드
     study = optuna.create_study(
         study_name=args.study_name,
-        storage=args.storage,
+        storage=storage_name,
         direction="maximize",
         pruner=pruner,
         load_if_exists=True,
@@ -157,13 +169,13 @@ def main():
         study.enqueue_trial(trial_to_resume.params, user_attrs={"resumes_trial": trial_to_resume.number})
 
     # 3. 최적화 실행
-    study.optimize(objective, n_trials=args.n_trials)
+    study.optimize(lambda trial: objective(trial, cfg), n_trials=args.n_trials)
 
     # 4. 결과 출력
     print("Number of finished trials: ", len(study.trials))
     trial = study.best_trial
 
-    print(f"  Best trial: {trial.number})")
+    print(f"  Best trial: {trial.number}")
     print("  Value: ", trial.value)
     print("  Params: ")
     for key, value in trial.params.items():
