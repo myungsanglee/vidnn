@@ -3,11 +3,11 @@ import torch.nn as nn
 import timm
 
 from vidnn.nn.neck import YoloNeckV1
-from vidnn.nn.head import DetectHeadV1, OBB
+from vidnn.nn.head import DetectHeadV1, Segment
 from vidnn.utils.torch_utils import model_info
 
 
-class MobileNetV3OBB(nn.Module):
+class MobileNetV3Segment(nn.Module):
 
     def __init__(self, num_classes=80):  # COCO 데이터셋 기본 80개 클래스
         super().__init__()
@@ -29,7 +29,7 @@ class MobileNetV3OBB(nn.Module):
         # Head: Decoupled 예측 헤드 (DFL 포함)
         # 넥의 출력 채널을 헤드의 입력 채널로 사용합니다.
         neck_out_channels = self.neck.neck_out_channels
-        self.head = OBB(num_classes=num_classes, in_channels=neck_out_channels)
+        self.head = Segment(num_classes=num_classes, in_channels=neck_out_channels, scale=[0.33, 0.50, 1024])
 
     def forward(self, x):
         # 1. 백본 (Backbone)
@@ -48,11 +48,11 @@ class MobileNetV3OBB(nn.Module):
 
 
 if __name__ == "__main__":
-    # 객체 클래스 수 (예: DOTA의 15개 클래스)
-    num_classes = 15
+    # 객체 클래스 수 (예: COCO의 80개 클래스)
+    num_classes = 80
 
     # YOLOv8MobileNet 모델 인스턴스 생성
-    model = MobileNetV3OBB(num_classes=num_classes)
+    model = MobileNetV3Segment(num_classes=num_classes)
 
     # Build strides
     m = model.head
@@ -63,7 +63,7 @@ if __name__ == "__main__":
         model.eval()  # Avoid changing batch statistics until training begins
         m.training = True  # Setting it to True to properly return strides
         preds = model(torch.zeros(1, 3, s, s))
-        preds = preds[0] if isinstance(m, (OBB)) else preds
+        preds = preds[0] if isinstance(m, (Segment)) else preds
         m.stride = torch.tensor([s / x.shape[-2] for x in preds])  # forward
         model.train()  # Set model back to training(default) mode
         m.bias_init()  # only run once
@@ -89,7 +89,7 @@ if __name__ == "__main__":
     print("\n더미 입력으로 모델 순전파 테스트 중...")
     with torch.no_grad():  # 역전파 계산 비활성화 (추론 시)
         preds = model(dummy_input)
-    preds = preds[0] if isinstance(model.head, (OBB)) else preds
+    preds = preds[0] if isinstance(model.head, (Segment)) else preds
 
     print("\n예측 결과 형태:")
     for i in range(len(preds)):

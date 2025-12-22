@@ -8,16 +8,17 @@ import torch
 from vidnn.data.datamodule import YoloDataModule
 from vidnn.models.detect.mobilenetv3_large_100_yolo import MobileNetV3Yolo
 from vidnn.models.obb.mobilenetv3_large_100_obb import MobileNetV3OBB
+from vidnn.models.segment.mobilenetv3_large_100_seg import MobileNetV3Segment
 from vidnn.module.tasks import DetectorModule, OBBModule
 from vidnn.utils import LOGGER
+from vidnn.utils.torch_utils import model_info
 
 
 def get_data_module(cfg):
     data_module = None
     task = cfg["task"]
-    if task in ["detect", "obb"]:
+    if task in ["detect", "obb", "segment", "pose", "calssify"]:
         data_module = YoloDataModule(cfg)
-
     else:
         raise Exception("Only support detect, obb tasks")
 
@@ -32,6 +33,8 @@ def get_model(cfg):
         model = MobileNetV3Yolo(num_classes=len(cfg["names"]))
     elif model_name == "mobilenetv3_large_100_obb" and task == "obb":
         model = MobileNetV3OBB(num_classes=len(cfg["names"]))
+    elif model_name == "mobilenetv3_large_100_seg" and task == "segment":
+        model = MobileNetV3Segment(num_classes=len(cfg["names"]))
     else:
         raise Exception(f"There is no {model_name} model for {task} task")
     return model
@@ -60,11 +63,21 @@ def get_model_module(model, cfg, steps_per_epoch):
         # PyTorch Lightning 체크포인트는 'state_dict' 키 아래에 모델 가중치를 저장합니다.
         state_dict = checkpoint["state_dict"]
 
-        # state_dict를 모델에 적용합니다.
-        # strict=False는 전이 학습(transfer learning)에 유용합니다.
-        # 체크포인트와 현재 모델 간에 일부 레이어 이름이 다르거나 없을 경우 오류 없이
-        # 일치하는 레이어의 가중치만 불러옵니다.
-        model_module.load_state_dict(state_dict, strict=False)
+        # 모델의 state_dict와 체크포인트의 state_dict를 비교하여
+        # 레이어 이름과 가중치 형태가 일치하는 경우에만 가중치를 선택합니다.
+        # 이는 전이 학습 시 발생할 수 있는 클래스 수 불일치 문제를 해결합니다.
+        model_state_dict = model_module.state_dict()
+        filtered_state_dict = {
+            k: v
+            for k, v in state_dict.items()
+            if k in model_state_dict and v.shape == model_state_dict[k].shape
+        }
+
+        # 필터링된 state_dict를 모델에 적용합니다.
+        # strict=False는 만약의 경우를 대비하여 유지합니다.
+        model_module.load_state_dict(filtered_state_dict, strict=False)
+
+    model_info(model_module, imgsz=cfg["imgsz"])
 
     return model_module
 

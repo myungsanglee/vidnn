@@ -1,6 +1,8 @@
 import os
 import torch
 
+torch.set_float32_matmul_precision("high")
+
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
@@ -103,5 +105,6 @@ if __name__ == "__main__":
     # cfg = get_configs(args.cfg)
 
     # cfg = get_configs("vidnn/configs/yolo.yaml")
-    cfg = get_configs("vidnn/configs/yolo-obb.yaml")
+    # cfg = get_configs("vidnn/configs/yolo-obb.yaml")
+    cfg = get_configs("vidnn/configs/yolo-ladybug.yaml")
     train(cfg)

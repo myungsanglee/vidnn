@@ -1,13 +1,13 @@
 # Model settings -------------------------------------------------------------------------------------------------------
-model : mobilenetv3_large_100_yolo # (str) model name to be trained
-# ckpt : # (str, optional) path to weights file for transfer learning or weight loading
-ckpt : optuna/detect/mobilenetv3_large_100_yolo/trial_0_best/weights/last.ckpt # (str, optional) path to weights file for transfer learning or weight loading
-task : detect # (str) detect, segment, classify, pose, obb
+model : mobilenetv3_large_100_seg # (str) model name to be trained
+ckpt : # (str, optional) path to weights file for transfer learning or weight loading
+# ckpt : optuna/detect/mobilenetv3_large_100_yolo/trial_0/weights/last.ckpt # (str, optional) path to weights file for transfer learning or weight loading
+task : segment # (str) detect, segment, classify, pose, obb
 
 # Train settings -------------------------------------------------------------------------------------------------------
 epochs: 20 # (int) number of epochs to train for
 patience: 20 # (int) epochs to wait for no observable improvement for early stopping of training
-batch_size: 64 # (int) number of images per batch
+batch_size: 2 # (int) number of images per batch
 imgsz: 640 # (int) input images size as int for train and val modes
 channels: 3 # (int) input images channels as int
 workers: 8 # (int) number of worker threads for data loading (per RANK if DDP)
@@ -65,15 +65,15 @@ mixup: 0.0 # (float) image mixup (probability)
 cutmix: 0.0 # (float) image cutmix (probability)
 
 # Dataset -------------------------------------------------------------------------------------------------------------
-# path: ../datasets/coco8 # dataset root dir
-# train: images/train # train images
-# val: images/val # val images
-# test: # test images (optional)
-
-path: ../datasets/coco # dataset root dir
-train: images/train2017 # train images
-val: images/val2017 # val images
+path: ../datasets/coco8-seg # dataset root dir
+train: images/train # train images
+val: images/val # val images
 test: # test images (optional)
+
+# path: ../datasets/coco # dataset root dir
+# train: images/train2017 # train images
+# val: images/val2017 # val images
+# test: # test images (optional)
 
 # Classes
 names:

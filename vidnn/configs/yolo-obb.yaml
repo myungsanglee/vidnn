@@ -1,7 +1,7 @@
 # Model settings -------------------------------------------------------------------------------------------------------
 model : mobilenetv3_large_100_obb # (str) model name to be trained
 ckpt : # (str, optional) path to weights file for transfer learning or weight loading
-# ckpt : runs/mobilenetv3_large_100_obb/weights/version_0/last.ckpt # (str, optional) path to weights file for transfer learning or weight loading
+# ckpt : runs/mobilenetv3_large_100_obb/version_0/weights/epoch=17-step=116046.ckpt # (str, optional) path to weights file for transfer learning or weight loading
 task : obb # (str) detect, segment, classify, pose, obb
 
 # Train settings -------------------------------------------------------------------------------------------------------
@@ -41,7 +41,8 @@ max_det: 300 # (int) maximum number of detections per image
 # Hyperparameters ------------------------------------------------------------------------------------------------------
 lr0: 0.01 # (float) initial learning rate (i.e. SGD=1E-2, Adam=1E-3)
 lrf: 0.01 # (float) final learning rate (lr0 * lrf)
-momentum: 0.937 # (float) SGD momentum/Adam beta1
+# momentum: 0.937 # (float) SGD momentum/Adam beta1
+momentum: 0.9 # (float) SGD momentum/Adam beta1
 weight_decay: 0.0005 # (float) optimizer weight decay 5e-4
 warmup_epochs: 3.0 # (float) warmup epochs (fractions ok)
 warmup_momentum: 0.8 # (float) warmup initial momentum
@@ -70,7 +71,7 @@ cutmix: 0.0 # (float) image cutmix (probability)
 # val: images/val # val images
 # test: # test images (optional)
 
-path: ../datasets/DOTAv1-split # dataset root dir
+path: ../datasets/dota # dataset root dir
 train: images/train # train images
 val: images/val # val images
 test: # test images (optional)

@@ -3,8 +3,9 @@ import torch
 import torch.nn as nn
 
 from .conv import Conv
-from .block import DFL
+from .block import DFL, Proto
 from vidnn.utils.tal import dist2bbox, dist2rbox, make_anchors
+from vidnn.utils.ops import make_divisible
 
 
 class DetectHeadV1(nn.Module):
@@ -142,3 +143,51 @@ class OBB(DetectHeadV1):
     def decode_bboxes(self, bboxes, anchors):
         """Decode rotated bounding boxes."""
         return dist2rbox(bboxes, self.angle, anchors, dim=1)
+
+
+class Segment(DetectHeadV1):
+    """Segment head for segmentation models.
+
+    This class extends the Detect head to include mask prediction capabilities for instance segmentation tasks.
+
+    Attributes:
+        nm (int): Number of masks.
+        npr (int): Number of protos.
+        proto (Proto): Prototype generation module.
+        cv4 (nn.ModuleList): Convolution layers for mask coefficients.
+
+    Methods:
+        forward: Return model outputs and mask coefficients.
+    """
+
+    def __init__(self, num_classes=80, num_masks=32, num_protos=256, in_channels=(), scale=None):
+        """Initialize the YOLO model attributes such as the number of masks, prototypes, and the convolution layers.
+
+        Args:
+            num_classes (int): Number of classes.
+            num_masks (int): Number of masks.
+            num_protos (int): Number of protos.
+            in_channels (tuple): Tuple of channel sizes from backbone feature maps.
+        """
+        super().__init__(num_classes, in_channels)
+        self.num_masks = num_masks  # number of masks
+        self.num_protos = num_protos  # number of protos
+        if scale is not None:
+            assert len(scale) == 3, "scale 값은 리스트로 [depth, width, max_channels] 3개의 값이 필요합니다."
+            depth, width, max_channels = scale
+            self.num_protos = make_divisible(min(num_protos, max_channels) * width, 8)
+        self.proto = Proto(in_channels[0], self.num_protos, self.num_masks)  # protos
+
+        c4 = max(in_channels[0] // 4, self.num_masks)
+        self.cv4 = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.num_masks, 1)) for x in in_channels)
+
+    def forward(self, x):
+        """Return model outputs and mask coefficients if training, otherwise return outputs and mask coefficients."""
+        p = self.proto(x[0])  # mask protos
+        bs = p.shape[0]  # batch size
+
+        mc = torch.cat([self.cv4[i](x[i]).view(bs, self.num_masks, -1) for i in range(self.num_heads)], 2)  # mask coefficients
+        x = DetectHeadV1.forward(self, x)
+        if self.training:
+            return x, mc, p
+        return (torch.cat([x[0], mc], 1), (x[1], mc, p))

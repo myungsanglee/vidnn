@@ -39,6 +39,6 @@ if __name__ == "__main__":
     # cfg = get_configs(args.cfg)
     # val(cfg, args.ckpt)
 
-    # cfg = get_configs("vidnn/configs/yolo.yaml")
-    cfg = get_configs("vidnn/configs/yolo-obb.yaml")
+    cfg = get_configs("vidnn/configs/yolo.yaml")
+    # cfg = get_configs("vidnn/configs/yolo-obb.yaml")
     val(cfg)

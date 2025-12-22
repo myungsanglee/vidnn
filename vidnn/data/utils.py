@@ -167,9 +167,9 @@ def load_image_from_source(source, imgsz=640):
 
         return im, orig_img[..., None] if orig_img.ndim == 2 else orig_img
 
-    elif isinstance(source, np.array):
+    elif isinstance(source, np.ndarray):
         h0, w0 = source.shape[:2]  # orig hw
-        orig_img = im
+        orig_img = source
         r = imgsz / max(h0, w0)  # ratio
         if r != 1:  # if sizes are not equal
             w, h = (min(math.ceil(w0 * r), imgsz), min(math.ceil(h0 * r), imgsz))

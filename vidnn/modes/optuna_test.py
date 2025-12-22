@@ -1,6 +1,9 @@
 import os
 import sys
 import torch
+
+torch.set_float32_matmul_precision("high")
+
 import argparse
 
 import pytorch_lightning as pl
@@ -123,9 +126,10 @@ def objective(trial: optuna.trial.Trial, cfg: dict):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n-trials", type=int, default=20, help="Number of trials to run.")
-    parser.add_argument("--study-name", type=str, default="detect", help="Name of the study.")
+    parser.add_argument("--study-name", type=str, default="obb", help="Name of the study.")
     parser.add_argument("--resume-trial", type=int, help="Specify a trial number to resume.")
-    parser.add_argument("--config", type=str, default="vidnn/configs/yolo.yaml", help="Path to the config file.")
+    # parser.add_argument("--config", type=str, default="vidnn/configs/yolo.yaml", help="Path to the config file.")
+    parser.add_argument("--config", type=str, default="vidnn/configs/yolo-obb.yaml", help="Path to the config file.")
     args = parser.parse_args()
 
     # get cfg
@@ -140,7 +144,11 @@ def main():
     os.makedirs(db_dir, exist_ok=True)
     storage_name = f"sqlite:///{os.path.join(db_dir, 'optuna.db')}"
 
-    pruner = optuna.pruners.MedianPruner()
+    pruner = optuna.pruners.MedianPruner(
+        n_startup_trials=5,
+        n_warmup_steps=10,
+        interval_steps=1,
+    )
 
     # 1. Study 생성 또는 로드
     study = optuna.create_study(

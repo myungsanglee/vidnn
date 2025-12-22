@@ -5,7 +5,7 @@ from torch import nn, optim
 import pytorch_lightning as pl
 import numpy as np
 
-from vidnn.nn.head import DetectHeadV1, OBB
+from vidnn.nn.head import DetectHeadV1, OBB, Segment
 from vidnn.utils.loss import DetectionLoss, OBBLoss
 from vidnn.utils.lr_scheduler import VidnnScheduler
 from vidnn.utils import LOGGER, ops
@@ -30,13 +30,20 @@ class DetectorModule(pl.LightningModule):
             self.model.eval()  # Avoid changing batch statistics until training begins
             m.training = True  # Setting it to True to properly return strides
             preds = model(torch.zeros(1, 3, s, s))
-            preds = preds[0] if isinstance(m, (OBB)) else preds
+            preds = preds[0] if isinstance(m, (OBB, Segment)) else preds
             m.stride = torch.tensor([s / x.shape[-2] for x in preds])  # forward
             self.model.train()  # Set model back to training(default) mode
             m.bias_init()  # only run once
 
         # Init weights, biases
         self.initialize_weights()
+
+        # Freeze backbone if requested
+        if self.cfg.get("freeze_backbone", False):
+            LOGGER.info("Freezing model backbone...")
+            for name, param in self.model.named_parameters():
+                if name.startswith("backbone."):
+                    param.requires_grad = False
 
         self.tloss = None
         self.vloss = None
@@ -54,6 +61,7 @@ class DetectorModule(pl.LightningModule):
             return self.loss(x)
         return self.model(x)
 
+    @torch.no_grad()
     def predict(self, source, conf=0.25, iou=0.6, imgsz=640, max_det=300):
         # preprocess
         img, orig_img = load_image_from_source(source, imgsz)
